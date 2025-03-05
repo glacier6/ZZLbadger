@@ -58,14 +58,14 @@ func (db *DB) openMemTables(opt Options) error {
 	if db.opt.InMemory {
 		return nil
 	}
-	files, err := os.ReadDir(db.opt.Dir)
+	files, err := os.ReadDir(db.opt.Dir) // 把LSM目录下所有文件读取出来
 	if err != nil {
 		return errFile(err, db.opt.Dir, "Unable to open mem dir.")
 	}
 
 	var fids []int
 	for _, file := range files {
-		if !strings.HasSuffix(file.Name(), memFileExt) {
+		if !strings.HasSuffix(file.Name(), memFileExt) { // 检查当前LSM目录下文件名是否包含".mem"，包含的才继续执行当轮循环，一般这个文件名字类似为001.mem，这个文件的内容就是LSM Tree的预写日志文件
 			continue
 		}
 		fsz := len(file.Name())
@@ -77,7 +77,7 @@ func (db *DB) openMemTables(opt Options) error {
 	}
 
 	// Sort in ascending order.
-	sort.Slice(fids, func(i, j int) bool {
+	sort.Slice(fids, func(i, j int) bool { // 把当前得到的.mem文件按照fid进行排序
 		return fids[i] < fids[j]
 	})
 	for _, fid := range fids {
@@ -85,7 +85,7 @@ func (db *DB) openMemTables(opt Options) error {
 		if db.opt.ReadOnly {
 			flags = os.O_RDONLY
 		}
-		mt, err := db.openMemTable(fid, flags)
+		mt, err := db.openMemTable(fid, flags) // 打开当前的.mem文件，并把数据加载进来
 		if err != nil {
 			return y.Wrapf(err, "while opening fid: %d", fid)
 		}
@@ -101,7 +101,7 @@ func (db *DB) openMemTables(opt Options) error {
 	if len(fids) != 0 {
 		db.nextMemFid = fids[len(fids)-1]
 	}
-	db.nextMemFid++
+	db.nextMemFid++ //设置下一个.mem文件的id
 	return nil
 }
 
@@ -148,7 +148,7 @@ func (db *DB) openMemTable(fid, flags int) (*memTable, error) {
 }
 
 func (db *DB) newMemTable() (*memTable, error) {
-	mt, err := db.openMemTable(db.nextMemFid, os.O_CREATE|os.O_RDWR)
+	mt, err := db.openMemTable(db.nextMemFid, os.O_CREATE|os.O_RDWR) //创建一个新的.mem文件
 	if err == z.NewFile {
 		db.nextMemFid++
 		return mt, nil

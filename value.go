@@ -480,7 +480,7 @@ func (vlog *valueLog) populateFilesMap() error {
 
 	found := make(map[uint64]struct{})
 	for _, file := range files {
-		if !strings.HasSuffix(file.Name(), ".vlog") {
+		if !strings.HasSuffix(file.Name(), ".vlog") { //筛选出后缀为.vlog的文件
 			continue
 		}
 		fsz := len(file.Name())
@@ -516,7 +516,7 @@ func (vlog *valueLog) createVlogFile() (*logFile, error) {
 		writeAt:  vlogHeaderSize,
 		opt:      vlog.opt,
 	}
-	err := lf.open(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 2*vlog.opt.ValueLogFileSize)
+	err := lf.open(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 2*vlog.opt.ValueLogFileSize) //创建.vlog文件，名字也是类似0001.vlog
 	if err != z.NewFile && err != nil {
 		return nil, err
 	}
@@ -552,7 +552,7 @@ func (vlog *valueLog) init(db *DB) {
 	vlog.dirPath = vlog.opt.ValueDir
 
 	vlog.garbageCh = make(chan struct{}, 1) // Only allow one GC at a time.
-	lf, err := InitDiscardStats(vlog.opt)
+	lf, err := InitDiscardStats(vlog.opt)   //这里创建的DISCARD文件是用作GC的
 	y.Check(err)
 	vlog.discardStats = lf
 	// See TestPersistLFDiscardStats for purpose of statement below.
@@ -574,7 +574,7 @@ func (vlog *valueLog) open(db *DB) error {
 		if vlog.opt.ReadOnly {
 			return nil
 		}
-		_, err := vlog.createVlogFile()
+		_, err := vlog.createVlogFile() //没有Vlog文件，需要创建一个
 		return y.Wrapf(err, "Error while creating log file in valueLog.open")
 	}
 	fids := vlog.sortedFids()

@@ -133,33 +133,34 @@ type Options struct {
 
 // DefaultOptions sets a list of recommended options for good performance.
 // Feel free to modify these to suit your needs with the WithX methods.
+// DB初始化
 func DefaultOptions(path string) Options {
 	return Options{
-		Dir:      path,
-		ValueDir: path,
+		Dir:      path, //LSM树的存储地址
+		ValueDir: path, //Vlog存储地址
 
-		MemTableSize:        64 << 20,
-		BaseTableSize:       2 << 20,
+		MemTableSize:        64 << 20, //内存表的尺寸大小 64乘2的20次方（向左移位20次）
+		BaseTableSize:       2 << 20,  //基础表大小
 		BaseLevelSize:       10 << 20,
 		TableSizeMultiplier: 2,
 		LevelSizeMultiplier: 10,
-		MaxLevels:           7,
+		MaxLevels:           7, //7层LSM树高
 		NumGoroutines:       8,
 		MetricsEnabled:      true,
 
 		NumCompactors:           4, // Run at least 2 compactors. Zero-th compactor prioritizes L0.
 		NumLevelZeroTables:      5,
 		NumLevelZeroTablesStall: 15,
-		NumMemtables:            5,
-		BloomFalsePositive:      0.01,
+		NumMemtables:            5,    //内存表数量
+		BloomFalsePositive:      0.01, //布隆过滤区假阳性的比例
 		BlockSize:               4 * 1024,
-		SyncWrites:              false,
+		SyncWrites:              false, //是否同步磁盘的写入
 		NumVersionsToKeep:       1,
 		CompactL0OnClose:        false,
-		VerifyValueChecksum:     false,
+		VerifyValueChecksum:     false, //是否进行参数校验和的检查
 		Compression:             options.Snappy,
-		BlockCacheSize:          256 << 20,
-		IndexCacheSize:          0,
+		BlockCacheSize:          256 << 20, //块缓存尺寸
+		IndexCacheSize:          0,         //索引缓存尺寸
 
 		// The following benchmarks were done on a 4 KB block size (default block size). The
 		// compression is ratio supposed to increase with increasing compression level but since the
@@ -175,12 +176,12 @@ func DefaultOptions(path string) Options {
 
 		// (2^30 - 1)*2 when mmapping < 2^31 - 1, max int32.
 		// -1 so 2*ValueLogFileSize won't overflow on 32-bit systems.
-		ValueLogFileSize: 1<<30 - 1,
+		ValueLogFileSize: 1<<30 - 1, //单个存储值的文件的大小上限
 
-		ValueLogMaxEntries: 1000000,
+		ValueLogMaxEntries: 1000000, //单个存储值的文件的KV对上限
 
 		VLogPercentile: 0.0,
-		ValueThreshold: maxValueThreshold,
+		ValueThreshold: maxValueThreshold, //zzl 小于这个值的就不会KV分离
 
 		Logger:                        defaultLogger(INFO),
 		EncryptionKey:                 []byte{},

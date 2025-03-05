@@ -185,18 +185,19 @@ func checkAndSetOptions(opt *Options) error {
 	return nil
 }
 
-// Open returns a new DB object.
+// 打开并返回一个DB对象 *DB（核心对象）
 func Open(opt Options) (*DB, error) {
 	if err := checkAndSetOptions(&opt); err != nil {
 		return nil, err
 	}
-	var dirLockGuard, valueDirLockGuard *directoryLockGuard
+	var dirLockGuard, valueDirLockGuard *directoryLockGuard //目录锁，防止DB启用需要用的目录后，其余进程也注册到这个目录
 
 	// Create directories and acquire lock on it only if badger is not running in InMemory mode.
 	// We don't have any directories/files in InMemory mode so we don't need to acquire
 	// any locks on them.
+	// 如果非纯内存运行
 	if !opt.InMemory {
-		if err := createDirs(opt); err != nil {
+		if err := createDirs(opt); err != nil { //创建目录
 			return nil, err
 		}
 		var err error
@@ -210,11 +211,11 @@ func Open(opt Options) (*DB, error) {
 					_ = dirLockGuard.release()
 				}
 			}()
-			absDir, err := filepath.Abs(opt.Dir)
+			absDir, err := filepath.Abs(opt.Dir) //得到创建的LSM树目录的绝对路径
 			if err != nil {
 				return nil, err
 			}
-			absValueDir, err := filepath.Abs(opt.ValueDir)
+			absValueDir, err := filepath.Abs(opt.ValueDir) //得到创建的Vlog的绝对路径
 			if err != nil {
 				return nil, err
 			}
@@ -232,10 +233,11 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 
-	manifestFile, manifest, err := openOrCreateManifestFile(opt)
+	manifestFile, manifest, err := openOrCreateManifestFile(opt) //打开并创建清单文件（存储每层level有哪些sstable文件及其KEY域）
 	if err != nil {
 		return nil, err
 	}
+	// go的钩子语法，当open退出的时候，会释放掉manifestFIle
 	defer func() {
 		if manifestFile != nil {
 			_ = manifestFile.close()
@@ -243,14 +245,14 @@ func Open(opt Options) (*DB, error) {
 	}()
 
 	db := &DB{
-		imm:              make([]*memTable, 0, opt.NumMemtables),
-		flushChan:        make(chan *memTable, opt.NumMemtables),
-		writeCh:          make(chan *request, kvWriteChCapacity),
+		imm:              make([]*memTable, 0, opt.NumMemtables), //内存表的数组
+		flushChan:        make(chan *memTable, opt.NumMemtables), //刷请请求的channel
+		writeCh:          make(chan *request, kvWriteChCapacity), //写请求的channel
 		opt:              opt,
 		manifest:         manifestFile,
-		dirLockGuard:     dirLockGuard,
-		valueDirGuard:    valueDirLockGuard,
-		orc:              newOracle(opt),
+		dirLockGuard:     dirLockGuard,      //两个目录锁
+		valueDirGuard:    valueDirLockGuard, //两个目录锁
+		orc:              newOracle(opt),    //KV引擎的并发事物的管理器，分配事务的版本号，Badger实现的是MVCC方式，然后通过Oracle来管理
 		pub:              newPublisher(),
 		allocPool:        z.NewAllocatorPool(8),
 		bannedNamespaces: &lockedKeys{keys: make(map[uint64]struct{})},
@@ -268,8 +270,8 @@ func Open(opt Options) (*DB, error) {
 		}
 	}()
 
-	if opt.BlockCacheSize > 0 {
-		numInCache := opt.BlockCacheSize / int64(opt.BlockSize)
+	if opt.BlockCacheSize > 0 { //如果允许有块缓存（PS：SSTable内部是按照块分割的）
+		numInCache := opt.BlockCacheSize / int64(opt.BlockSize) //得到有多少块缓存 （块缓存总大小/单块大小）
 		if numInCache == 0 {
 			// Make the value of this variable at least one since the cache requires
 			// the number of counters to be greater than zero.
@@ -283,13 +285,13 @@ func Open(opt Options) (*DB, error) {
 			Metrics:     true,
 			OnExit:      table.BlockEvictHandler,
 		}
-		db.blockCache, err = ristretto.NewCache[[]byte, *table.Block](&config)
+		db.blockCache, err = ristretto.NewCache[[]byte, *table.Block](&config) //这个是Dgraph社区实现的支持并发高性能的缓存库
 		if err != nil {
 			return nil, y.Wrap(err, "failed to create data cache")
 		}
 	}
 
-	if opt.IndexCacheSize > 0 {
+	if opt.IndexCacheSize > 0 { // 如果允许有索引缓存，每个SSTable开头会有一个索引块，方便快速的可以对KEY进行二分查找，定位当前的key在哪个SSTable
 		// Index size is around 5% of the table size.
 		indexSz := int64(float64(opt.MemTableSize) * 0.05)
 		numInCache := opt.IndexCacheSize / indexSz
@@ -312,14 +314,14 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	db.closers.cacheHealth = z.NewCloser(1)
-	go db.monitorCache(db.closers.cacheHealth)
+	go db.monitorCache(db.closers.cacheHealth) //对块缓存的监控
 
 	if db.opt.InMemory {
 		db.opt.SyncWrites = false
 		// If badger is running in memory mode, push everything into the LSM Tree.
 		db.opt.ValueThreshold = math.MaxInt32
 	}
-	krOpt := KeyRegistryOptions{
+	krOpt := KeyRegistryOptions{ //key的注册，与并发事务相关
 		ReadOnly:                      opt.ReadOnly,
 		Dir:                           opt.Dir,
 		EncryptionKey:                 opt.EncryptionKey,
@@ -332,7 +334,7 @@ func Open(opt Options) (*DB, error) {
 	}
 	db.calculateSize()
 	db.closers.updateSize = z.NewCloser(1)
-	go db.updateSize(db.closers.updateSize)
+	go db.updateSize(db.closers.updateSize) //计算消耗的内存
 
 	if err := db.openMemTables(db.opt); err != nil {
 		return nil, y.Wrapf(err, "while opening memtables")
@@ -344,15 +346,19 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 
+	// 新建一个LevelsController（维护LSM树的level，做日志归并，压缩处理之类的）
+	// 打开各个SST，加载元数据块，索引块等至内存中
 	// newLevelsController potentially loads files in directory.
-	if db.lc, err = newLevelsController(db, &manifest); err != nil {
+	if db.lc, err = newLevelsController(db, &manifest); err != nil { // 利用清单做初始信息配置
 		return db, err
 	}
 
 	// Initialize vlog struct.
+	// 初始化Vlog
 	db.vlog.init(db)
 
 	if !opt.ReadOnly {
+		// 下面是启动LSM Tree的日志归并的协程
 		db.closers.compactors = z.NewCloser(1)
 		db.lc.startCompact(db.closers.compactors)
 
@@ -366,18 +372,21 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 	// We do increment nextTxnTs below. So, no need to do it here.
-	db.orc.nextTxnTs = db.MaxVersion()
-	db.opt.Infof("Set nextTxnTs to %d", db.orc.nextTxnTs)
+	db.orc.nextTxnTs = db.MaxVersion()                    //最大事务的时间戳（最大版本号）
+	db.opt.Infof("Set nextTxnTs to %d", db.orc.nextTxnTs) //打印日志
 
 	if err = db.vlog.open(db); err != nil {
 		return db, y.Wrapf(err, "During db.vlog.open")
 	}
 
+	//下面这三行和事务相关，DB在恢复事务
 	// Let's advance nextTxnTs to one more than whatever we observed via
 	// replaying the logs.
+	//让我们将nextTxnTs提前到比我们通过回放日志观察到的多一个。
 	db.orc.txnMark.Done(db.orc.nextTxnTs)
 	// In normal mode, we must update readMark so older versions of keys can be removed during
 	// compaction when run in offline mode via the flatten tool.
+	// 在正常模式下，我们必须更新readMark，以便在脱机模式下通过展开工具运行时，可以在压缩过程中删除旧版本的密钥。
 	db.orc.readMark.Done(db.orc.nextTxnTs)
 	db.orc.incrementNextTs()
 
@@ -388,16 +397,17 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	db.closers.writes = z.NewCloser(1)
-	go db.doWrites(db.closers.writes)
+	go db.doWrites(db.closers.writes) //创建一个处理写请求的协程
 
-	if !db.opt.InMemory {
+	if !db.opt.InMemory { //开启GC
 		db.closers.valueGC = z.NewCloser(1)
 		go db.vlog.waitOnGC(db.closers.valueGC)
 	}
 
 	db.closers.pub = z.NewCloser(1)
-	go db.pub.listenForUpdates(db.closers.pub)
+	go db.pub.listenForUpdates(db.closers.pub) // 这个是性能提升的一个点
 
+	//下面是释放锁
 	valueDirLockGuard = nil
 	dirLockGuard = nil
 	manifestFile = nil

@@ -77,16 +77,16 @@ func revertToManifest(kv *DB, mf *Manifest, idMap map[uint64]struct{}) error {
 }
 
 func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
-	y.AssertTrue(db.opt.NumLevelZeroTablesStall > db.opt.NumLevelZeroTables)
+	y.AssertTrue(db.opt.NumLevelZeroTablesStall > db.opt.NumLevelZeroTables) //断言
 	s := &levelsController{
 		kv:     db,
-		levels: make([]*levelHandler, db.opt.MaxLevels),
+		levels: make([]*levelHandler, db.opt.MaxLevels), //创建level数组，下标就是第几层，默认总共是7层，levelHandler管理SSTable
 	}
 	s.cstatus.tables = make(map[uint64]struct{})
 	s.cstatus.levels = make([]*levelCompactStatus, db.opt.MaxLevels)
 
 	for i := 0; i < db.opt.MaxLevels; i++ {
-		s.levels[i] = newLevelHandler(db, i)
+		s.levels[i] = newLevelHandler(db, i) //每层一个LevelHandler，管理当前层的SSTable
 		s.cstatus.levels[i] = new(levelCompactStatus)
 	}
 
@@ -105,6 +105,9 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 	// We found that using 3 goroutines allows disk throughput to be utilized to its max.
 	// Disk utilization is the main thing we should focus on, while trying to read the data. That's
 	// the one factor that remains constant between HDD and SSD.
+	//我们发现，使用3个goroutines可以最大限度地利用磁盘吞吐量。
+	//在尝试读取数据时，磁盘利用率是我们应该关注的主要问题。那是
+	//这是HDD和SSD之间保持不变的一个因素。
 	throttle := y.NewThrottle(3)
 
 	start := time.Now()
@@ -112,7 +115,7 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 	tick := time.NewTicker(3 * time.Second)
 	defer tick.Stop()
 
-	for fileID, tf := range mf.Tables {
+	for fileID, tf := range mf.Tables { //从清单文件中取出各个Table
 		fname := table.NewFilename(fileID, db.opt.Dir)
 		select {
 		case <-tick.C:
@@ -169,14 +172,15 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 		closeAllTables(tables)
 		return nil, err
 	}
-	db.opt.Infof("All %d tables opened in %s\n", numOpened.Load(),
+	db.opt.Infof("All %d tables opened in %s\n", numOpened.Load(), //打印日志
 		time.Since(start).Round(time.Millisecond))
 	s.nextFileID.Store(maxFileID + 1)
 	for i, tbls := range tables {
-		s.levels[i].initTables(tbls)
+		s.levels[i].initTables(tbls) //初始化LSM树的各层级的SST
 	}
 
 	// Make sure key ranges do not overlap etc.
+	// 确保KEY范围不重叠等。
 	if err := s.validate(); err != nil {
 		_ = s.cleanupLevels()
 		return nil, y.Wrap(err, "Level validation")
@@ -184,6 +188,8 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 
 	// Sync directory (because we have at least removed some files, or previously created the
 	// manifest file).
+	// 同步目录（因为我们至少删除了一些文件，或者之前创建了
+	// 清单文件）。
 	if err := syncDir(db.opt.Dir); err != nil {
 		_ = s.close()
 		return nil, err

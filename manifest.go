@@ -56,10 +56,10 @@ type Manifest struct {
 }
 
 func createManifest() Manifest {
-	levels := make([]levelManifest, 0)
+	levels := make([]levelManifest, 0) //行级清单
 	return Manifest{
 		Levels: levels,
-		Tables: make(map[uint64]TableManifest),
+		Tables: make(map[uint64]TableManifest), //uint64表行号
 	}
 }
 
@@ -138,7 +138,7 @@ func openOrCreateManifestFile(opt Options) (
 func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 	deletionsThreshold int) (*manifestFile, Manifest, error) {
 
-	path := filepath.Join(dir, ManifestFilename)
+	path := filepath.Join(dir, ManifestFilename) //
 	var flags y.Flags
 	if readOnly {
 		flags |= y.ReadOnly
@@ -151,8 +151,8 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 		if readOnly {
 			return nil, Manifest{}, fmt.Errorf("no manifest found, required for read-only db")
 		}
-		m := createManifest()
-		fp, netCreations, err := helpRewrite(dir, &m, extMagic)
+		m := createManifest()                                   //创建Manifest（清单文件）
+		fp, netCreations, err := helpRewrite(dir, &m, extMagic) //把清单文件写到磁盘
 		if err != nil {
 			return nil, Manifest{}, err
 		}
