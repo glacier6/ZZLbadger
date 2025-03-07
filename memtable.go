@@ -193,7 +193,8 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 	if mt.wal != nil {
 		// If WAL exceeds opt.ValueLogFileSize, we'll force flush the memTable. See logic in
 		// ensureRoomForWrite.
-		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil {
+		// 如果WAL超过opt。ValueLogFileSize，我们将强制刷新memTable。
+		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil { //写入预写日志
 			return y.Wrapf(err, "cannot write entry to WAL file")
 		}
 	}
@@ -203,7 +204,7 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 	}
 
 	// Write to skiplist and update maxVersion encountered.
-	mt.sl.Put(key, value)
+	mt.sl.Put(key, value) //这里的LS就是跳表了！！把KV压入跳表
 	if ts := y.ParseTs(entry.Key); ts > mt.maxVersion {
 		mt.maxVersion = ts
 	}

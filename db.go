@@ -814,7 +814,7 @@ func (db *DB) writeToLSM(b *request) error {
 
 	for i, entry := range b.Entries {
 		var err error
-		if entry.skipVlogAndSetThreshold(db.valueThreshold()) {
+		if entry.skipVlogAndSetThreshold(db.valueThreshold()) { // db.valueThreshold()获取的是分大小KV的界限，貌似默认是1024字节，如果本if为true，那么就是小value，把值直接放进去
 			// Will include deletion / tombstone case.
 			err = db.mt.Put(entry.Key,
 				y.ValueStruct{
@@ -827,11 +827,11 @@ func (db *DB) writeToLSM(b *request) error {
 					UserMeta:  entry.UserMeta,
 					ExpiresAt: entry.ExpiresAt,
 				})
-		} else {
+		} else { // 是大KV
 			// Write pointer to Memtable.
 			err = db.mt.Put(entry.Key,
 				y.ValueStruct{
-					Value:     b.Ptrs[i].Encode(),
+					Value:     b.Ptrs[i].Encode(), // 设置为（文件名+offset（偏移））
 					Meta:      entry.meta | bitValuePointer,
 					UserMeta:  entry.UserMeta,
 					ExpiresAt: entry.ExpiresAt,
@@ -848,7 +848,7 @@ func (db *DB) writeToLSM(b *request) error {
 }
 
 // writeRequests is called serially by only one goroutine.
-func (db *DB) writeRequests(reqs []*request) error {
+func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 	if len(reqs) == 0 {
 		return nil
 	}
@@ -856,11 +856,11 @@ func (db *DB) writeRequests(reqs []*request) error {
 	done := func(err error) {
 		for _, r := range reqs {
 			r.Err = err
-			r.Wg.Done()
+			r.Wg.Done() // 提醒上层写完成
 		}
 	}
 	db.opt.Debugf("writeRequests called. Writing to value log")
-	err := db.vlog.write(reqs)
+	err := db.vlog.write(reqs) // 写入VLOG
 	if err != nil {
 		done(err)
 		return err
@@ -932,20 +932,20 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 
 func (db *DB) doWrites(lc *z.Closer) {
 	defer lc.Done()
-	pendingCh := make(chan struct{}, 1)
+	pendingCh := make(chan struct{}, 1) // 一个缓冲区的chan
 
 	writeRequests := func(reqs []*request) {
 		if err := db.writeRequests(reqs); err != nil {
 			db.opt.Errorf("writeRequests: %v", err)
 		}
-		<-pendingCh
+		<-pendingCh // 将那一个缓冲区释放，表示当前这一个写请求已经完成了
 	}
 
 	// This variable tracks the number of pending writes.
-	reqLen := new(expvar.Int)
+	reqLen := new(expvar.Int) // 获取写请求的长度
 	y.PendingWritesSet(db.opt.MetricsEnabled, db.opt.Dir, reqLen)
 
-	reqs := make([]*request, 0, 10)
+	reqs := make([]*request, 0, 10) // 攒了10次才会去写
 	for {
 		var r *request
 		select {
@@ -955,10 +955,10 @@ func (db *DB) doWrites(lc *z.Closer) {
 		}
 
 		for {
-			reqs = append(reqs, r)
+			reqs = append(reqs, r) //将当前写请求加入累计数组
 			reqLen.Set(int64(len(reqs)))
 
-			if len(reqs) >= 3*kvWriteChCapacity {
+			if len(reqs) >= 3*kvWriteChCapacity { // 是否大于KV写缓存的容量长度（kvWriteChCapacity是常量固定1000）
 				pendingCh <- struct{}{} // blocking.
 				goto writeCase
 			}
@@ -981,15 +981,15 @@ func (db *DB) doWrites(lc *z.Closer) {
 			case r = <-db.writeCh:
 				reqs = append(reqs, r)
 			default:
-				pendingCh <- struct{}{} // Push to pending before doing a write.
-				writeRequests(reqs)
+				pendingCh <- struct{}{} // Push to pending before doing a write.处理写请求，就把这个容量为1的chan填满封死，处理完这个后再释放
+				writeRequests(reqs)     // 处理写请求
 				return
 			}
 		}
 
 	writeCase:
-		go writeRequests(reqs)
-		reqs = make([]*request, 0, 10)
+		go writeRequests(reqs)         //另外开一个协程，异步的去处理当前累积的写请求
+		reqs = make([]*request, 0, 10) //清空当前写请求数组
 		reqLen.Set(0)
 	}
 }

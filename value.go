@@ -757,6 +757,9 @@ func (vlog *valueLog) woffset() uint32 {
 // validateWrites will check whether the given requests can fit into 4GB vlog file.
 // NOTE: 4GB is the maximum size we can create for vlog because value pointer offset is of type
 // uint32. If we create more than 4GB, it will overflow uint32. So, limiting the size to 4GB.
+/*
+validateWrites将检查给定的请求是否可以放入4GB的vlog文件中。注意：4GB是我们可以为vlog创建的最大大小，因为值指针偏移量的类型是uint32。如果我们创建超过4GB，它将溢出uint32。因此，将大小限制为4GB。
+*/
 func (vlog *valueLog) validateWrites(reqs []*request) error {
 	vlogOffset := uint64(vlog.woffset())
 	for _, req := range reqs {
@@ -764,13 +767,14 @@ func (vlog *valueLog) validateWrites(reqs []*request) error {
 		size := estimateRequestSize(req)
 		estimatedVlogOffset := vlogOffset + size
 		if estimatedVlogOffset > uint64(maxVlogFileSize) {
-			return errors.Errorf("Request size offset %d is bigger than maximum offset %d",
+			return errors.Errorf("Request size offset %d is bigger than maximum offset %d", //数据太大，溢出了
 				estimatedVlogOffset, maxVlogFileSize)
 		}
 
 		if estimatedVlogOffset >= uint64(vlog.opt.ValueLogFileSize) {
 			// We'll create a new vlog file if the estimated offset is greater or equal to
 			// max vlog size. So, resetting the vlogOffset.
+			// 如果估计的偏移量大于或等于最大vlog大小，我们将创建一个新的vlog文件（即切割）。因此，重置vlogOffset。
 			vlogOffset = 0
 			continue
 		}
@@ -790,18 +794,18 @@ func estimateRequestSize(req *request) uint64 {
 }
 
 // write is thread-unsafe by design and should not be called concurrently.
-func (vlog *valueLog) write(reqs []*request) error {
+func (vlog *valueLog) write(reqs []*request) error { //这里面进行落盘
 	if vlog.db.opt.InMemory {
 		return nil
 	}
 	// Validate writes before writing to vlog. Because, we don't want to partially write and return
 	// an error.
-	if err := vlog.validateWrites(reqs); err != nil {
+	if err := vlog.validateWrites(reqs); err != nil { // 进行写请求的检查
 		return y.Wrapf(err, "while validating writes")
 	}
 
 	vlog.filesLock.RLock()
-	maxFid := vlog.maxFid
+	maxFid := vlog.maxFid // 就是Vlog文件的那个前缀数字（取最大的）
 	curlf := vlog.filesMap[maxFid]
 	vlog.filesLock.RUnlock()
 
