@@ -186,7 +186,7 @@ func (e Entry) print(prefix string) {
 // This function uses key and value reference, hence users must
 // not modify key and value until the end of transaction.
 func NewEntry(key, value []byte) *Entry {
-	return &Entry{
+	return &Entry{ //包装KV对象
 		Key:   key,
 		Value: value,
 	}

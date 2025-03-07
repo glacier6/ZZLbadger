@@ -1,3 +1,7 @@
+ZZL写在最前：
+目前badger的大致优化方向：
+1.热点识别与更新（利用有限的缓存进行更好的冷热分离）
+2.动态参数的调整（BadgerDB的参数目前是锁死的）
 # BadgerDB
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dgraph-io/badger/v4.svg)](https://pkg.go.dev/github.com/dgraph-io/badger/v4)
@@ -234,6 +238,3 @@ If you're interested in contributing to Badger see [CONTRIBUTING](./CONTRIBUTING
 - Please use [discuss.dgraph.io](https://discuss.dgraph.io) for questions, discussions, and feature requests.
 - Follow us on Twitter [@dgraphlabs](https://twitter.com/dgraphlabs).
 
-
-
-ZZLTEST2

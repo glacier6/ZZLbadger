@@ -113,7 +113,7 @@ func (w *WaterMark) LastIndex() uint64 {
 
 // WaitForMark waits until the given index is marked as done.
 func (w *WaterMark) WaitForMark(ctx context.Context, index uint64) error {
-	if w.DoneUntil() >= index {
+	if w.DoneUntil() >= index { //如果当前已提交的最大事务时间戳大于等于当前时间戳，则返回就可以了，否则就往后执行，等满足了再唤醒
 		return nil
 	}
 	waitCh := make(chan struct{})
@@ -143,7 +143,7 @@ func (w *WaterMark) process(closer *z.Closer) {
 	pending := make(map[uint64]int)
 	waiters := make(map[uint64][]chan struct{})
 
-	heap.Init(&indices)
+	heap.Init(&indices) // 初始化堆
 
 	processOne := func(index uint64, done bool) {
 		// If not already done, then set. Otherwise, don't undo a done entry.
@@ -156,7 +156,7 @@ func (w *WaterMark) process(closer *z.Closer) {
 		if done {
 			delta = -1
 		}
-		pending[index] = prev + delta
+		pending[index] = prev + delta //对时间戳加一或者减一，加一貌似代表活跃事务+1,减一相反
 
 		// Update mark by going through all indices in order; and checking if they have
 		// been done. Stop at the first index, which isn't done.
@@ -175,7 +175,7 @@ func (w *WaterMark) process(closer *z.Closer) {
 			}
 			// Even if done is called multiple times causing it to become
 			// negative, we should still pop the index.
-			heap.Pop(&indices)
+			heap.Pop(&indices) // 弹出小顶堆中时间戳最小的
 			delete(pending, min)
 			until = min
 			loops++
@@ -192,7 +192,7 @@ func (w *WaterMark) process(closer *z.Closer) {
 			delete(waiters, idx) // Release the memory back.
 		}
 
-		if until-doneUntil <= uint64(len(waiters)) {
+		if until-doneUntil <= uint64(len(waiters)) { //如果水位发生了移动
 			// Issue #908 showed that if doneUntil is close to 2^60, while until is zero, this loop
 			// can hog up CPU just iterating over integers creating a busy-wait loop. So, only do
 			// this path if until - doneUntil is less than the number of waiters.
@@ -216,11 +216,11 @@ func (w *WaterMark) process(closer *z.Closer) {
 			return
 		case mark := <-w.markCh:
 			if mark.waiter != nil {
-				doneUntil := w.doneUntil.Load()
-				if doneUntil >= mark.index {
+				doneUntil := w.doneUntil.Load() // 获取已提交事务的水位（水位是和时间戳同一类型的东西，表示在其之前的时间戳（即版本）均已提交）
+				if doneUntil >= mark.index {    //诺已提交事务的时间戳大于等于当前时间戳，就可以直接close，不用等待
 					close(mark.waiter)
-				} else {
-					ws, ok := waiters[mark.index]
+				} else { //当前时间戳大于当前已提交事务的时间戳，表明当前事务前还有活跃的事物
+					ws, ok := waiters[mark.index] //创建等待数组
 					if !ok {
 						waiters[mark.index] = []chan struct{}{mark.waiter}
 					} else {
@@ -232,7 +232,7 @@ func (w *WaterMark) process(closer *z.Closer) {
 				if mark.index > 0 || (mark.index == 0 && len(mark.indices) == 0) {
 					processOne(mark.index, mark.done)
 				}
-				for _, index := range mark.indices {
+				for _, index := range mark.indices { // 遍历所有事务，其目的是为了让所有活跃的事物感知到相互之间的关系？TODO:
 					processOne(index, mark.done)
 				}
 			}

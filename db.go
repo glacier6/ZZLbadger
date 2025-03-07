@@ -245,14 +245,15 @@ func Open(opt Options) (*DB, error) {
 	}()
 
 	db := &DB{
-		imm:              make([]*memTable, 0, opt.NumMemtables), //内存表的数组
-		flushChan:        make(chan *memTable, opt.NumMemtables), //刷请请求的channel
-		writeCh:          make(chan *request, kvWriteChCapacity), //写请求的channel
-		opt:              opt,
-		manifest:         manifestFile,
-		dirLockGuard:     dirLockGuard,      //两个目录锁
-		valueDirGuard:    valueDirLockGuard, //两个目录锁
-		orc:              newOracle(opt),    //KV引擎的并发事物的管理器，分配事务的版本号，Badger实现的是MVCC方式，然后通过Oracle来管理
+		imm:           make([]*memTable, 0, opt.NumMemtables), //内存表的数组
+		flushChan:     make(chan *memTable, opt.NumMemtables), //刷请请求的channel
+		writeCh:       make(chan *request, kvWriteChCapacity), //写请求的channel
+		opt:           opt,
+		manifest:      manifestFile,
+		dirLockGuard:  dirLockGuard,      //两个目录锁
+		valueDirGuard: valueDirLockGuard, //两个目录锁
+		orc:           newOracle(opt),    //KV引擎的并发事物的管理器，分配事务的版本号，Badger实现的是MVCC方式，然后通过Oracle来管理，维护了两个小顶堆，一个提交时间戳，一个读时间戳，只读的话只用后者，而UPDATE二者全用
+		//而这两个时间戳维护也用了watermark（水位）的概念
 		pub:              newPublisher(),
 		allocPool:        z.NewAllocatorPool(8),
 		bannedNamespaces: &lockedKeys{keys: make(map[uint64]struct{})},
