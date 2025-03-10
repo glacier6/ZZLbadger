@@ -467,8 +467,8 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 	}
 
 	item = new(Item)
-	if txn.update {
-		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 如果是读写事务，则判断当前key是否pendingWrites，如果在，下面就直接拼装返回
+	if txn.update { // 如果是读写事务
+		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否pendingWrites，如果在，下面就直接拼装返回
 			if isDeletedOrExpired(e.meta, e.ExpiresAt) {
 				return nil, ErrKeyNotFound
 			}
@@ -489,7 +489,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 	}
 
 	//下面就是没直接找到，去LSM TREE取相应的key了
-	seek := y.KeyWithTs(key, txn.readTs)
+	seek := y.KeyWithTs(key, txn.readTs) // key后拼接读取时间戳
 	vs, err := txn.db.get(seek)
 	if err != nil {
 		return nil, y.Wrapf(err, "DB::Get key: %q", key)
@@ -791,6 +791,7 @@ func (db *DB) NewTransaction(update bool) *Txn {
 	return db.newTransaction(update, false)
 }
 
+// NewTransactionAt函数用于创建事务
 func (db *DB) newTransaction(update, isManaged bool) *Txn {
 	if db.opt.ReadOnly && update {
 		// DB is read-only, force read-only transaction.
@@ -819,13 +820,13 @@ func (db *DB) newTransaction(update, isManaged bool) *Txn {
 // View executes a function creating and managing a read-only transaction for the user. Error
 // returned by the function is relayed by the View method.
 // If View is used with managed transactions, it would assume a read timestamp of MaxUint64.
-func (db *DB) View(fn func(txn *Txn) error) error {
+func (db *DB) View(fn func(txn *Txn) error) error { //处理只读事务，只读事务除了begin等少数操作，不会阻塞其他事物？
 	if db.IsClosed() {
 		return ErrDBClosed
 	}
 	var txn *Txn
 	if db.opt.managedTxns {
-		txn = db.NewTransactionAt(math.MaxUint64, false)
+		txn = db.NewTransactionAt(math.MaxUint64, false) // NewTransactionAt函数用于创建事务
 	} else {
 		txn = db.NewTransaction(false)
 	}

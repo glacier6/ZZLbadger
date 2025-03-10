@@ -1622,7 +1622,7 @@ func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) 
 	// parallelize this, we will need to call the h.RLock() function by increasing order of level
 	// number.)
 	version := y.ParseTs(key)
-	for _, h := range s.levels {
+	for _, h := range s.levels { //遍历7（默认）层
 		// Ignore all levels below startLevel. This is useful for GC when L0 is kept in memory.
 		if h.level < startLevel {
 			continue

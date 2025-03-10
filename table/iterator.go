@@ -98,9 +98,9 @@ func (itr *blockIterator) setIdx(i int) {
 		}
 	}()
 
-	entryData := itr.data[startOffset:endOffset]
+	entryData := itr.data[startOffset:endOffset] //把目标数据提取出来到字节数组
 	var h header
-	h.Decode(entryData)
+	h.Decode(entryData) //把字节解析成数据结构
 	// Header contains the length of key overlap and difference compared to the base key. If the key
 	// before this one had the same or better key overlap, we can avoid copying that part into
 	// itr.key. But, if the overlap was lesser, we could copy over just that portion.
@@ -143,7 +143,7 @@ func (itr *blockIterator) seek(key []byte, whence int) {
 		startIndex = itr.idx
 	}
 
-	foundEntryIdx := sort.Search(len(itr.entryOffsets), func(idx int) bool {
+	foundEntryIdx := sort.Search(len(itr.entryOffsets), func(idx int) bool { //对块做二分查找
 		// If idx is less than start index then just return false.
 		if idx < startIndex {
 			return false
@@ -185,6 +185,7 @@ type Iterator struct {
 }
 
 // NewIterator returns a new iterator of the Table
+// 表的迭代器
 func (t *Table) NewIterator(opt int) *Iterator {
 	t.IncrRef() // Important.
 	ti := &Iterator{t: t, opt: opt}
@@ -251,7 +252,7 @@ func (itr *Iterator) seekToLast() {
 
 func (itr *Iterator) seekHelper(blockIdx int, key []byte) {
 	itr.bpos = blockIdx
-	block, err := itr.t.block(blockIdx, itr.useCache())
+	block, err := itr.t.block(blockIdx, itr.useCache()) //拿到block块
 	if err != nil {
 		itr.err = err
 		return
@@ -259,7 +260,7 @@ func (itr *Iterator) seekHelper(blockIdx int, key []byte) {
 	itr.bi.tableID = itr.t.id
 	itr.bi.blockID = itr.bpos
 	itr.bi.setBlock(block)
-	itr.bi.seek(key, origin)
+	itr.bi.seek(key, origin) //二分查找block内数据
 	itr.err = itr.bi.Error()
 }
 
@@ -273,12 +274,13 @@ func (itr *Iterator) seekFrom(key []byte, whence int) {
 	}
 
 	var ko fb.BlockOffset
-	idx := sort.Search(itr.t.offsetsLength(), func(idx int) bool {
+	//这个是个二分查找
+	idx := sort.Search(itr.t.offsetsLength(), func(idx int) bool { //遍历块（SST的更低一级的存储单元），idx返回目标key的SST的offset位置
 		// Offsets should never return false since we're iterating within the OffsetsLength.
 		y.AssertTrue(itr.t.offsets(&ko, idx))
 		return y.CompareKeys(ko.KeyBytes(), key) > 0
 	})
-	if idx == 0 {
+	if idx == 0 { //没有找到
 		// The smallest key in our table is already strictly > key. We can return that.
 		// This is like a SeekToFirst.
 		itr.seekHelper(0, key)

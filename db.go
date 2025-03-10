@@ -738,14 +738,16 @@ func (db *DB) getMemTables() ([]*memTable, func()) {
 	// Mutable memtable does not exist in read-only mode.
 	if !db.opt.ReadOnly {
 		// Get mutable memtable.
-		tables = append(tables, db.mt)
+		// 获取活跃（可变的）memtable
+		tables = append(tables, db.mt) //当前活跃的内存表为第一个内存表
 		db.mt.IncrRef()
 	}
 
 	// Get immutable memtables.
-	last := len(db.imm) - 1
+	// 获取固定（不可变的）immemtable
+	last := len(db.imm) - 1 //获取imm的数量
 	for i := range db.imm {
-		tables = append(tables, db.imm[last-i])
+		tables = append(tables, db.imm[last-i]) // 按新旧程度越新的放在越前面
 		db.imm[last-i].IncrRef()
 	}
 	return tables, func() {
@@ -769,6 +771,20 @@ func (db *DB) getMemTables() ([]*memTable, func()) {
 // do that. For every get("fooX") call where X is the version, we will search
 // for "fooX" in all the levels of the LSM tree. This is expensive but it
 // removes the overhead of handling move keys completely.
+// get返回给定键在memtable或磁盘中的值。
+// 请注意，该值将包括元字节。
+//
+// 重要提示：我们不应该为同一密钥写入具有旧时间戳的条目，我们需要
+// 保持不变以搜索关键字的最新值，否则我们需要在所有值中搜索
+// 并在其中找到最大版本。为了保持这种不变性，我们还需要确保
+// 从级别1开始，密钥的所有版本始终存在于同一表中，因为压缩
+// 可以推倒任何桌子。
+//
+// 更新（2020年9月23日）-我们已取消移动密钥的实施。早些时候，我们
+// 我们正在插入移动键来修复无效的值指针，但我们不再
+// 这样做。对于每个get（“fooX”）调用，其中X是版本，我们将搜索
+// 对于LSM树的所有级别中的“fooX”。这很贵，但
+// 完全消除了处理移动键的开销。
 func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	if db.IsClosed() {
 		return y.ValueStruct{}, ErrDBClosed
@@ -777,10 +793,10 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	defer decr()
 
 	var maxVs y.ValueStruct
-	version := y.ParseTs(key)
+	version := y.ParseTs(key) // 从key中解析出版本号
 
 	y.NumGetsAdd(db.opt.MetricsEnabled, 1)
-	for i := 0; i < len(tables); i++ {
+	for i := 0; i < len(tables); i++ { //从最新开始遍历table
 		vs := tables[i].sl.Get(key)
 		y.NumMemtableGetsAdd(db.opt.MetricsEnabled, 1)
 		if vs.Meta == 0 && vs.Value == nil {
@@ -795,7 +811,7 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 			maxVs = vs
 		}
 	}
-	return db.lc.get(key, maxVs, 0)
+	return db.lc.get(key, maxVs, 0) //这里就去磁盘找了
 }
 
 var requestPool = sync.Pool{

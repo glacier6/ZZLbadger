@@ -117,7 +117,7 @@ func Copy(a []byte) []byte {
 }
 
 // KeyWithTs generates a new key by appending ts to key.
-func KeyWithTs(key []byte, ts uint64) []byte {
+func KeyWithTs(key []byte, ts uint64) []byte { // key后拼接时间戳
 	out := make([]byte, len(key)+8)
 	copy(out, key)
 	binary.BigEndian.PutUint64(out[len(key):], math.MaxUint64-ts)

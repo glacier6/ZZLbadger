@@ -540,7 +540,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 	if idx >= t.offsetsLength() {
 		return nil, errors.New("block out of index")
 	}
-	if t.opt.BlockCache != nil {
+	if t.opt.BlockCache != nil { //如果允许块缓存，那么就先去内存找对应块
 		key := t.blockCacheKey(idx)
 		blk, ok := t.opt.BlockCache.Get(key)
 		if ok && blk != nil {
@@ -561,7 +561,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 	NumBlocks.Add(1)
 
 	var err error
-	if blk.data, err = t.read(blk.offset, int(ko.Len())); err != nil {
+	if blk.data, err = t.read(blk.offset, int(ko.Len())); err != nil { //从磁盘读出来block块
 		return nil, y.Wrapf(err,
 			"failed to read from file: %s at offset: %d, len: %d",
 			t.Fd.Name(), blk.offset, ko.Len())
@@ -626,7 +626,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 
 		// Decrement the block ref if we could not insert it in the cache.
 		if !t.opt.BlockCache.Set(key, blk, blk.size()) {
-			blk.decrRef()
+			blk.decrRef() //将读取到的块设置到块缓存中
 		}
 		// We have added an OnReject func in our cache, which gets called in case the block is not
 		// admitted to the cache. So, every block would be accounted for.
@@ -683,8 +683,8 @@ func (t *Table) DoesNotHave(hash uint32) bool {
 	}
 
 	y.NumLSMBloomHitsAdd(t.opt.MetricsEnabled, "DoesNotHave_ALL", 1)
-	index := t.fetchIndex()
-	bf := index.BloomFilterBytes()
+	index := t.fetchIndex()        //获取当前SST的索引块
+	bf := index.BloomFilterBytes() //做布隆过滤器的过滤
 	mayContain := y.Filter(bf).MayContain(hash)
 	if !mayContain {
 		y.NumLSMBloomHitsAdd(t.opt.MetricsEnabled, "DoesNotHave_HIT", 1)

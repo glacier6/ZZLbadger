@@ -2,6 +2,10 @@ ZZL写在最前：
 目前badger的大致优化方向：
 1.热点识别与更新（利用有限的缓存进行更好的冷热分离）
 2.动态参数的调整（BadgerDB的参数目前是锁死的）
+
+1.SST分为元数据块，索引块，DATA块
+2.目录中文件名后面的带test的，是做单元测试的模块
+3.有两级缓存，一级索引的缓存，一个块的缓存
 # BadgerDB
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dgraph-io/badger/v4.svg)](https://pkg.go.dev/github.com/dgraph-io/badger/v4)

@@ -238,16 +238,19 @@ func (s *levelHandler) close() error {
 }
 
 // getTableForKey acquires a read-lock to access s.tables. It returns a list of tableHandlers.
-func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error) {
-	s.RLock()
+func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error) { //注意这一个函数执行一次不是遍历所有层，是遍历目标层
+	s.RLock() //上锁
 	defer s.RUnlock()
 
-	if s.level == 0 {
+	if s.level == 0 { //0层的特殊结构（可重叠），特殊处理
 		// For level 0, we need to check every table. Remember to make a copy as s.tables may change
 		// once we exit this function, and we don't want to lock s.tables while seeking in tables.
 		// CAUTION: Reverse the tables.
+		//对于级别0，我们需要检查每个表。记得复制一份，因为s.tables可能会发生变化
+		//一旦我们退出此函数，并且我们不想在表中查找时锁定s.tables。
+		//小心：倒序遍历表。
 		out := make([]*table.Table, 0, len(s.tables))
-		for i := len(s.tables) - 1; i >= 0; i-- {
+		for i := len(s.tables) - 1; i >= 0; i-- { // 倒序遍历表（从新的开始遍历）
 			out = append(out, s.tables[i])
 			s.tables[i].IncrRef()
 		}
@@ -261,43 +264,44 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 		}
 	}
 	// For level >= 1, we can do a binary search as key range does not overlap.
-	idx := sort.Search(len(s.tables), func(i int) bool {
+	idx := sort.Search(len(s.tables), func(i int) bool { //利用SST的键值范围做一个二分查找，返回的idx是范围匹配到的SST在SST表中下标位置
 		return y.CompareKeys(s.tables[i].Biggest(), key) >= 0
 	})
 	if idx >= len(s.tables) {
 		// Given key is strictly > than every element we have.
 		return nil, func() error { return nil }
 	}
-	tbl := s.tables[idx]
+	tbl := s.tables[idx] //获取匹配的那个SST，并在之后返回
 	tbl.IncrRef()
 	return []*table.Table{tbl}, tbl.DecrRef
 }
 
 // get returns value for a given key or the key after that. If not found, return nil.
+// get返回给定键或之后键的值。如果没有找到，返回nil。
 func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
-	tables, decr := s.getTableForKey(key)
-	keyNoTs := y.ParseKey(key)
+	tables, decr := s.getTableForKey(key) //获取当前层的可能包含目标key的SST列表
+	keyNoTs := y.ParseKey(key)            //获取没有时间戳的KEY
 
-	hash := y.Hash(keyNoTs)
+	hash := y.Hash(keyNoTs) // 把key映射到了一个hash函数中
 	var maxVs y.ValueStruct
 	for _, th := range tables {
-		if th.DoesNotHave(hash) {
+		if th.DoesNotHave(hash) { //判断布隆过滤器是否命中（每个SST写入时都会在元数据区包含一个布隆过滤器的数值）
 			y.NumLSMBloomHitsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1)
 			continue
 		}
-
+		// 下面是查询	SST，即上面判断出阳性了
 		it := th.NewIterator(0)
 		defer it.Close()
 
 		y.NumLSMGetsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1)
-		it.Seek(key)
-		if !it.Valid() {
+		it.Seek(key)     //正式查询，查找到的会放到it内
+		if !it.Valid() { //判断查找到的是否有效
 			continue
 		}
 		if y.SameKey(key, it.Key()) {
 			if version := y.ParseTs(it.Key()); maxVs.Version < version {
-				maxVs = it.ValueCopy()
-				maxVs.Version = version
+				maxVs = it.ValueCopy()  //拼接值
+				maxVs.Version = version //拼接版本
 			}
 		}
 	}
