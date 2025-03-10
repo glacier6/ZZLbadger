@@ -148,8 +148,8 @@ func (item *Item) DiscardEarlierVersions() bool {
 }
 
 func (item *Item) yieldItemValue() ([]byte, func(), error) {
-	key := item.Key() // No need to copy.
-	if !item.hasValue() {
+	key := item.Key()     // No need to copy.
+	if !item.hasValue() { // 如果已经加载了，就不加载
 		return nil, nil, nil
 	}
 
@@ -157,16 +157,17 @@ func (item *Item) yieldItemValue() ([]byte, func(), error) {
 		item.slice = new(y.Slice)
 	}
 
-	if (item.meta & bitValuePointer) == 0 {
+	if (item.meta & bitValuePointer) == 0 { //判断是否是kv分离的值
+		//不是kv分离
 		val := item.slice.Resize(len(item.vptr))
 		copy(val, item.vptr)
 		return val, nil, nil
 	}
-
+	// 是kv分离
 	var vp valuePointer
 	vp.Decode(item.vptr)
 	db := item.txn.db
-	result, cb, err := db.vlog.Read(vp, item.slice)
+	result, cb, err := db.vlog.Read(vp, item.slice) // 去磁盘读目标value
 	if err != nil {
 		db.opt.Errorf("Unable to read: Key: %v, Version : %v, meta: %v, userMeta: %v"+
 			" Error: %v", key, item.version, item.meta, item.userMeta, err)
@@ -206,7 +207,7 @@ func runCallback(cb func()) {
 }
 
 func (item *Item) prefetchValue() {
-	val, cb, err := item.yieldItemValue()
+	val, cb, err := item.yieldItemValue() // 获取item的value值
 	defer runCallback(cb)
 
 	item.err = err
@@ -340,20 +341,23 @@ func (opt *IteratorOptions) compareToPrefix(key []byte) int {
 	return bytes.Compare(key, opt.Prefix)
 }
 
+// 这个函数是为了挑选table，尽量减少需要遍历的table（用于0层筛选SST）
 func (opt *IteratorOptions) pickTable(t table.TableInterface) bool {
 	// Ignore this table if its max version is less than the sinceTs.
 	if t.MaxVersion() < opt.SinceTs {
 		return false
 	}
-	if len(opt.Prefix) == 0 {
+	if len(opt.Prefix) == 0 { //如果遍历器没有指定前缀，那么所有table都需要遍历
 		return true
 	}
+	//下面两个IF是判断是否在区间内
 	if opt.compareToPrefix(t.Smallest()) > 0 {
 		return false
 	}
 	if opt.compareToPrefix(t.Biggest()) < 0 {
 		return false
 	}
+	// 在区间内了，还需要利用布隆过滤器再来判断一次
 	// Bloom filter lookup would only work if opt.Prefix does NOT have the read
 	// timestamp as part of the key.
 	if opt.prefixIsKey && t.DoesNotHave(y.Hash(opt.Prefix)) {
@@ -364,6 +368,7 @@ func (opt *IteratorOptions) pickTable(t table.TableInterface) bool {
 
 // pickTables picks the necessary table for the iterator. This function also assumes
 // that the tables are sorted in the right order.
+// 这个也是过滤一些不必遍历的table（用于非0层筛选SST）
 func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 	filterTables := func(tables []*table.Table) []*table.Table {
 		if opt.SinceTs > 0 {
@@ -485,16 +490,17 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	defer decr()
 	txn.db.vlog.incrIteratorCount()
 	var iters []y.Iterator
-	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil {
+	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil { //先拿事务中的数据
 		iters = append(iters, itr)
 	}
-	for i := 0; i < len(tables); i++ {
+	for i := 0; i < len(tables); i++ { //拿内存里面的数据
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
+	// lc是层级管理器，下面是对每一层创建一个迭代器
 	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references.
 	res := &Iterator{
 		txn:    txn,
-		iitr:   table.NewMergeIterator(iters, opt.Reverse),
+		iitr:   table.NewMergeIterator(iters, opt.Reverse), // 合并的迭代器，包含事物的，内存的，外存的（按level展开）
 		opt:    opt,
 		readTs: txn.readTs,
 	}
@@ -615,6 +621,9 @@ func isDeletedOrExpired(meta byte, expiresAt uint64) bool {
 // or it has pushed an item into it.data list, else it returns false.
 //
 // This function advances the iterator.
+// parseItem是一个复杂的函数，因为它需要处理正向和反向迭代实现。我们存储key，使其版本按降序排列。
+// 这使得正向迭代高效，但揭示了迭代的复杂性。这种权衡更好，因为正向迭代比反向迭代更常见。如果迭代器无效或已将项推入.data列表，则返回true，否则返回false。
+// 此函数用于推进迭代器。
 func (it *Iterator) parseItem() bool {
 	mi := it.iitr
 	key := mi.Key()
@@ -623,12 +632,13 @@ func (it *Iterator) parseItem() bool {
 		if it.item == nil {
 			it.item = item
 		} else {
-			it.data.push(item)
+			it.data.push(item) //设置到迭代器的链表里
 		}
 	}
 
 	isInternalKey := bytes.HasPrefix(key, badgerPrefix)
 	// Skip badger keys.
+	// 跳过badger内部的key
 	if !it.opt.InternalAccess && isInternalKey {
 		mi.Next()
 		return false
@@ -637,7 +647,7 @@ func (it *Iterator) parseItem() bool {
 	// Skip any versions which are beyond the readTs.
 	version := y.ParseTs(key)
 	// Ignore everything that is above the readTs and below or at the sinceTs.
-	if version > it.readTs || (it.opt.SinceTs > 0 && version <= it.opt.SinceTs) {
+	if version > it.readTs || (it.opt.SinceTs > 0 && version <= it.opt.SinceTs) { //如果目标key的版本号（时间戳）大于当前查询事务的版本号，则代表这个key是在当前事务之后创建的，不应该被查询出来
 		mi.Next()
 		return false
 	}
@@ -651,6 +661,7 @@ func (it *Iterator) parseItem() bool {
 	if it.opt.AllVersions {
 		// Return deleted or expired values also, otherwise user can't figure out
 		// whether the key was deleted.
+		//还返回已删除或过期的值，否则用户无法确定密钥是否已删除。（不包括当前事务之后创建的key）
 		item := it.newItem()
 		it.fill(item)
 		setItem(item)
@@ -661,7 +672,7 @@ func (it *Iterator) parseItem() bool {
 	// If iterating in forward direction, then just checking the last key against current key would
 	// be sufficient.
 	if !it.opt.Reverse {
-		if y.SameKey(it.lastKey, key) {
+		if y.SameKey(it.lastKey, key) { //诺是老版本的key，就排除（前面已经读出来新版的key了)
 			mi.Next()
 			return false
 		}
@@ -670,6 +681,11 @@ func (it *Iterator) parseItem() bool {
 		// Consider keys: a 5, b 7 (del), b 5. When iterating, lastKey = a.
 		// Then we see b 7, which is deleted. If we don't store lastKey = b, we'll then return b 5,
 		// which is wrong. Therefore, update lastKey here.
+		//只跟踪前进方向。
+		//我们应该在快照中找到不同的密钥后立即更新lastKey。
+		//考虑键：a 5，b 7（del），b 5。迭代时，lastKey=a。
+		//然后我们看到b7，它被删除了。如果我们不存储lastKey=b，那么我们将返回b5，
+		//这是错误的。因此，请在此处更新lastKey。
 		it.lastKey = y.SafeCopy(it.lastKey, mi.Key())
 	}
 
@@ -682,11 +698,11 @@ FILL:
 	}
 
 	item := it.newItem()
-	it.fill(item)
+	it.fill(item) //获取item
 	// fill item based on current cursor position. All Next calls have returned, so reaching here
 	// means no Next was called.
 
-	mi.Next()                           // Advance but no fill item yet.
+	mi.Next()                           //判断下一个                           // Advance but no fill item yet.
 	if !it.opt.Reverse || !mi.Valid() { // Forward direction, or invalid.
 		setItem(item)
 		return true
@@ -713,14 +729,14 @@ func (it *Iterator) fill(item *Item) {
 	item.version = y.ParseTs(it.iitr.Key())
 	item.key = y.SafeCopy(item.key, y.ParseKey(it.iitr.Key()))
 
-	item.vptr = y.SafeCopy(item.vptr, vs.Value)
+	item.vptr = y.SafeCopy(item.vptr, vs.Value) // 值指针对象
 	item.val = nil
 	if it.opt.PrefetchValues {
-		item.wg.Add(1)
+		item.wg.Add(1) //这里是go语言的并发控制的一个组件
 		go func() {
 			// FIXME we are not handling errors here.
-			item.prefetchValue()
-			item.wg.Done()
+			item.prefetchValue() //从vlog里面去拿
+			item.wg.Done()       //这里就是前面有个wg.wait的地方 NOTE:0 处
 		}()
 	}
 }
@@ -748,7 +764,7 @@ func (it *Iterator) prefetch() {
 			continue
 		}
 		count++
-		if count == prefetchSize {
+		if count == prefetchSize { //读出来的有效个数达到设置的预取上限
 			break
 		}
 	}
@@ -764,8 +780,8 @@ func (it *Iterator) Seek(key []byte) {
 	if len(key) > 0 {
 		it.txn.addReadKey(key)
 	}
-	for i := it.data.pop(); i != nil; i = it.data.pop() {
-		i.wg.Wait()
+	for i := it.data.pop(); i != nil; i = it.data.pop() { // it.data是一个列表，存的是预读取的数据
+		i.wg.Wait() //做一个小范围的异步，等待vlog中的值读到内存 NOTE:0
 		it.waste.push(i)
 	}
 
@@ -774,8 +790,8 @@ func (it *Iterator) Seek(key []byte) {
 		key = it.opt.Prefix
 	}
 	if len(key) == 0 {
-		it.iitr.Rewind()
-		it.prefetch()
+		it.iitr.Rewind() //调整迭代器的平衡二叉树，保证range key是从小到大的顺序读取的
+		it.prefetch()    //预取操作，真的要读了
 		return
 	}
 
@@ -792,5 +808,5 @@ func (it *Iterator) Seek(key []byte) {
 // smallest key if iterating forward, and largest if iterating backward. It does not keep track of
 // whether the cursor started with a Seek().
 func (it *Iterator) Rewind() {
-	it.Seek(nil)
+	it.Seek(nil) //查找一个不存在的key就把指针指向0
 }

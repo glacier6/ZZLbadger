@@ -24,9 +24,9 @@ import (
 )
 
 type valuePointer struct {
-	Fid    uint32
-	Len    uint32
-	Offset uint32
+	Fid    uint32 // vlog文件的名字
+	Len    uint32 // value的长度
+	Offset uint32 // 在当前vlog的偏移量
 }
 
 const vptrSize = unsafe.Sizeof(valuePointer{})

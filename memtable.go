@@ -389,7 +389,7 @@ func (lf *logFile) encryptionEnabled() bool {
 }
 
 // Acquire lock on mmap/file if you are calling this
-func (lf *logFile) read(p valuePointer) (buf []byte, err error) {
+func (lf *logFile) read(p valuePointer) (buf []byte, err error) { //真正在vlog中读取value的函数
 	offset := p.Offset
 	// Do not convert size to uint32, because the lf.Data can be of size
 	// 4GB, which overflows the uint32 during conversion to make the size 0,
@@ -397,7 +397,7 @@ func (lf *logFile) read(p valuePointer) (buf []byte, err error) {
 	size := int64(len(lf.Data))
 	valsz := p.Len
 	lfsz := lf.size.Load()
-	if int64(offset) >= size || int64(offset+valsz) > size ||
+	if int64(offset) >= size || int64(offset+valsz) > size || //防止越界
 		// Ensure that the read is within the file's actual size. It might be possible that
 		// the offset+valsz length is beyond the file's actual size. This could happen when
 		// dropAll and iterations are running simultaneously.

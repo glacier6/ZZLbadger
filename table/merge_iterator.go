@@ -95,7 +95,7 @@ func (n *node) seek(key []byte) {
 	n.setKey()
 }
 
-func (mi *MergeIterator) fix() {
+func (mi *MergeIterator) fix() { //这个函数做的是一个平衡二叉树的平衡操作，保证下次取最小的item？
 	if !mi.bigger().valid {
 		return
 	}
@@ -151,11 +151,11 @@ func (mi *MergeIterator) swapSmall() {
 // Next returns the next element. If it is the same as the current key, ignore it.
 func (mi *MergeIterator) Next() {
 	for mi.Valid() {
-		if !bytes.Equal(mi.small.key, mi.curKey) {
+		if !bytes.Equal(mi.small.key, mi.curKey) { //忽略相同key但是版本较低的KV对
 			break
 		}
 		mi.small.next()
-		mi.fix()
+		mi.fix() //再平衡二叉树
 	}
 	mi.setCurrent()
 }
@@ -165,10 +165,10 @@ func (mi *MergeIterator) setCurrent() {
 }
 
 // Rewind seeks to first element (or last element for reverse iterator).
-func (mi *MergeIterator) Rewind() {
-	mi.left.rewind()
-	mi.right.rewind()
-	mi.fix()
+func (mi *MergeIterator) Rewind() { //针对合并迭代树做一个后序的遍历
+	mi.left.rewind()  // 左节点
+	mi.right.rewind() // 右节点
+	mi.fix()          // 根节点
 	mi.setCurrent()
 }
 
@@ -206,7 +206,7 @@ func (mi *MergeIterator) Close() error {
 }
 
 // NewMergeIterator creates a merge iterator.
-func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator {
+func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator { // 会把迭代器组织成一个平衡二叉树，之后会对这个二叉树进行左旋右旋等操作，为了方便做range操作，也是生成了一个堆？（利用其惰性排序，就可以不用把所有需要遍历的SST依次遍历，进而提升性能）
 	switch len(iters) {
 	case 0:
 		return nil

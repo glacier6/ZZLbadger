@@ -6,6 +6,7 @@ ZZL写在最前：
 1.SST分为元数据块，索引块，DATA块
 2.目录中文件名后面的带test的，是做单元测试的模块
 3.有两级缓存，一级索引的缓存，一个块的缓存
+4.数据可能在内存，也可能在外存，也可能在事务中，共三类。而对这三类查找时，每类均会有一个迭代器，每个迭代器的实现方式也不一样
 # BadgerDB
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/dgraph-io/badger/v4.svg)](https://pkg.go.dev/github.com/dgraph-io/badger/v4)

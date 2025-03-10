@@ -943,7 +943,7 @@ func (vlog *valueLog) getFileRLocked(vp valuePointer) (*logFile, error) {
 // Read reads the value log at a given location.
 // TODO: Make this read private.
 func (vlog *valueLog) Read(vp valuePointer, _ *y.Slice) ([]byte, func(), error) {
-	buf, lf, err := vlog.readValueBytes(vp)
+	buf, lf, err := vlog.readValueBytes(vp) //关键
 	// log file is locked so, decide whether to lock immediately or let the caller to
 	// unlock it, after caller uses it.
 	cb := vlog.getUnlockCallback(lf)
@@ -993,12 +993,12 @@ func (vlog *valueLog) getUnlockCallback(lf *logFile) func() {
 // readValueBytes return vlog entry slice and read locked log file. Caller should take care of
 // logFile unlocking.
 func (vlog *valueLog) readValueBytes(vp valuePointer) ([]byte, *logFile, error) {
-	lf, err := vlog.getFileRLocked(vp)
+	lf, err := vlog.getFileRLocked(vp) //上一个文件锁
 	if err != nil {
 		return nil, nil, err
 	}
 
-	buf, err := lf.read(vp)
+	buf, err := lf.read(vp) // 这里就是真正的去读了
 	y.NumReadsVlogAdd(vlog.db.opt.MetricsEnabled, 1)
 	y.NumBytesReadsVlogAdd(vlog.db.opt.MetricsEnabled, int64(len(buf)))
 	return buf, lf, err
