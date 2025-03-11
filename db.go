@@ -1239,18 +1239,18 @@ func (db *DB) updateSize(lc *z.Closer) {
 }
 
 // RunValueLogGC triggers a value log garbage collection.
-//
+
 // It picks value log files to perform GC based on statistics that are collected
 // during compactions.  If no such statistics are available, then log files are
 // picked in random order. The process stops as soon as the first log file is
 // encountered which does not result in garbage collection.
-//
+
 // When a log file is picked, it is first sampled. If the sample shows that we
 // can discard at least discardRatio space of that file, it would be rewritten.
-//
+
 // If a call to RunValueLogGC results in no rewrites, then an ErrNoRewrite is
 // thrown indicating that the call resulted in no file rewrites.
-//
+
 // We recommend setting discardRatio to 0.5, thus indicating that a file be
 // rewritten if half the space can be discarded.  This results in a lifetime
 // value log write amplification of 2 (1 from original write + 0.5 rewrite +
@@ -1259,17 +1259,26 @@ func (db *DB) updateSize(lc *z.Closer) {
 // reclaims at the cost of increased activity on the LSM tree. discardRatio
 // must be in the range (0.0, 1.0), both endpoints excluded, otherwise an
 // ErrInvalidRequest is returned.
-//
+
 // Only one GC is allowed at a time. If another value log GC is running, or DB
 // has been closed, this would return an ErrRejected.
-//
+
 // Note: Every time GC is run, it would produce a spike of activity on the LSM
 // tree.
+
+// RunValueLogGC触发值日志垃圾回收。
+// 它根据压缩过程中收集的统计数据选择值日志文件来执行GC。如果没有此类统计数据，则以随机顺序选择日志文件。一旦遇到第一个不会导致垃圾回收的日志文件，该进程就会停止。
+// 当拾取日志文件时，首先对其进行采样。如果示例显示我们至少可以丢弃该文件的disardRatio空间，那么它将被重写。
+// 如果对RunValueLogGC的调用没有导致重写，则会抛出ErrNoRewrite，表示该调用没有导致文件重写。
+// 我们建议将disardRatio设置为0.5，这样表示如果可以丢弃一半的空间，则可以重写文件。这导致生命周期值日志写入放大2（原始写入1+0.5重写+
+// 0.25 + 0.125 + ... = 2.将其设置为更高的值将导致更少的空间回收，而将它设置为较低的值将以增加LSM树上的活动为代价导致更多的空间回收。discadRatio必须在（0.0，1.0）范围内，排除两个端点，否则返回ErrInvalidRequest。
+// 一次只允许一个GC。如果另一个值日志GC正在运行，或者DB已关闭，这将返回ErrorRejected。
+// 注意：每次运行GC时，它都会在LSM树上产生一个活动尖峰。
 func (db *DB) RunValueLogGC(discardRatio float64) error {
-	if db.opt.InMemory {
+	if db.opt.InMemory { // 纯内存不需要GC
 		return ErrGCInMemoryMode
 	}
-	if discardRatio >= 1.0 || discardRatio <= 0.0 {
+	if discardRatio >= 1.0 || discardRatio <= 0.0 { // 脏键率不合规
 		return ErrInvalidRequest
 	}
 

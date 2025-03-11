@@ -104,11 +104,14 @@ func (lf *discardStats) maxSlot() int {
 // 0, it would return the current value of discard for the file. If discard is
 // < 0, it would set the current value of discard to zero for the file.
 func (lf *discardStats) Update(fidu uint32, discard int64) int64 {
+	// 这个函数是更新每个vlog文件的垃圾键值对数量
+	// lf是一个Mmap的文件，discard是新累加的垃圾个数，为-1则代表是对vlog清理了，需要把累加器置为0
+	// 而discard的个数是在LSM树compaction操作时顺带计数的
 	fid := uint64(fidu)
 	lf.Lock()
 	defer lf.Unlock()
 
-	idx := sort.Search(lf.nextEmptySlot, func(slot int) bool {
+	idx := sort.Search(lf.nextEmptySlot, func(slot int) bool { //先进行二分查找
 		return lf.get(slot*16) >= fid
 	})
 	if idx < lf.nextEmptySlot && lf.get(idx*16) == fid {
@@ -117,11 +120,11 @@ func (lf *discardStats) Update(fidu uint32, discard int64) int64 {
 		if discard == 0 {
 			return int64(curDisc)
 		}
-		if discard < 0 {
+		if discard < 0 { //诺函数传入的是-1表示当前vlog已经处理完了，设置为0
 			lf.set(off, 0)
 			return 0
 		}
-		lf.set(off, curDisc+uint64(discard))
+		lf.set(off, curDisc+uint64(discard)) //将新的垃圾个数（discard）累加到当前计数中
 		return int64(curDisc + uint64(discard))
 	}
 	if discard <= 0 {
@@ -130,6 +133,7 @@ func (lf *discardStats) Update(fidu uint32, discard int64) int64 {
 	}
 
 	// Could not find the fid. Add the entry.
+	// 下面是没有找到这个fid，说明是新的vlog，为这个vlog创建新的slot来存放 （FID:该文件中垃圾KV对数量）
 	idx = lf.nextEmptySlot
 	lf.set(idx*16, fid)
 	lf.set(idx*16+8, uint64(discard))
@@ -146,9 +150,9 @@ func (lf *discardStats) Update(fidu uint32, discard int64) int64 {
 }
 
 func (lf *discardStats) Iterate(f func(fid, stats uint64)) {
-	for slot := 0; slot < lf.nextEmptySlot; slot++ {
+	for slot := 0; slot < lf.nextEmptySlot; slot++ { // 每个slot（16bit）记录 FID:该文件中垃圾KV对数量
 		idx := 16 * slot
-		f(lf.get(idx), lf.get(idx+8))
+		f(lf.get(idx), lf.get(idx+8)) //拿fid与脏键数
 	}
 }
 
@@ -158,7 +162,7 @@ func (lf *discardStats) MaxDiscard() (uint32, int64) {
 	defer lf.Unlock()
 
 	var maxFid, maxVal uint64
-	lf.Iterate(func(fid, val uint64) {
+	lf.Iterate(func(fid, val uint64) { // 这个val可以理解为脏键数
 		if maxVal < val {
 			maxVal = val
 			maxFid = fid

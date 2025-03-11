@@ -49,7 +49,7 @@ func main() {
 		return nil
 	})
 	// vlog 的GC
-	err = db.RunValueLogGC(0.7)
+	err = db.RunValueLogGC(0.7) //脏键百分比0.7
 	_ = err
 
 	// your code here

@@ -444,10 +444,13 @@ func (lf *logFile) doneWriting(offset uint32) error {
 
 // iterate iterates over log file. It doesn't not allocate new memory for every kv pair.
 // Therefore, the kv pair is only valid for the duration of fn call.
+// iterate迭代日志文件。它不会为每个KV对分配新的内存。
+// 因此，kv对仅在函数调用期间有效。
+// 下面这个就是从Vlog文件中拿到KV数据，然后进行编解码，序列化到对象，然后方便外面的fe函数进行调用
 func (lf *logFile) iterate(readOnly bool, offset uint32, fn logEntry) (uint32, error) {
 	if offset == 0 {
 		// If offset is set to zero, let's advance past the encryption key header.
-		offset = vlogHeaderSize
+		offset = vlogHeaderSize //跳过存元数据信息之类的head，共20字节
 	}
 
 	// For now, read directly from file, because it allows
@@ -484,6 +487,7 @@ loop:
 			break loop
 		}
 
+		//下面这五行代码就是对值指针的一个拼接
 		var vp valuePointer
 		vp.Len = uint32(e.hlen + len(e.Key) + len(e.Value) + crc32.Size)
 		read.recordOffset += vp.Len

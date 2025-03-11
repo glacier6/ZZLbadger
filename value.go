@@ -172,9 +172,9 @@ func (r *safeRead) Entry(reader io.Reader) (*Entry, error) {
 
 func (vlog *valueLog) rewrite(f *logFile) error {
 	vlog.filesLock.RLock()
-	for _, fid := range vlog.filesToBeDeleted {
+	for _, fid := range vlog.filesToBeDeleted { //这个for循环是为了检查当前的Vlog文件是否被删除了
 		if fid == f.fid {
-			vlog.filesLock.RUnlock()
+			vlog.filesLock.RUnlock() //被删了，就把上面加的锁解开
 			return errors.Errorf("value log file already marked for deletion fid: %d", fid)
 		}
 	}
@@ -183,7 +183,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 	vlog.filesLock.RUnlock()
 
 	vlog.opt.Infof("Rewriting fid: %d", f.fid)
-	wb := make([]*Entry, 0, 1000)
+	wb := make([]*Entry, 0, 1000) //存放KV数量的缓冲区？
 	var size int64
 
 	y.AssertTrue(vlog.db != nil)
@@ -194,20 +194,22 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 			vlog.opt.Debugf("Processing entry %d", count)
 		}
 
-		vs, err := vlog.db.get(e.Key)
+		vs, err := vlog.db.get(e.Key) // 从LSM tree里面查当前key的最新版本
 		if err != nil {
 			return err
 		}
-		if discardEntry(e, vs, vlog.db) {
+		if discardEntry(e, vs, vlog.db) { //判断当前key是否可以删除，如果是可删除的（返回true），就暂时什么操作也不做（直接return nil）
 			return nil
 		}
+
+		//下面的就是对需要保留的kv进行操作
 
 		// Value is still present in value log.
 		if len(vs.Value) == 0 {
 			return errors.Errorf("Empty value: %+v", vs)
 		}
 		var vp valuePointer
-		vp.Decode(vs.Value)
+		vp.Decode(vs.Value) // 当前value还是一个字节数组，需要进行编解码，序列化
 
 		// If the entry found from the LSM Tree points to a newer vlog file, don't do anything.
 		if vp.Fid > f.fid {
@@ -222,13 +224,13 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		// insert them back into the DB.
 		// NOTE: It might be possible that the entry read from the LSM Tree points to
 		// an older vlog file. See the comments in the else part.
-		if vp.Fid == f.fid && vp.Offset == e.offset {
-			moved++
+		if vp.Fid == f.fid && vp.Offset == e.offset { //都匹配的上，证明是一个有效的KV
+			moved++ //移除的计数位+1
 			// This new entry only contains the key, and a pointer to the value.
 			ne := new(Entry)
 			// Remove only the bitValuePointer and transaction markers. We
 			// should keep the other bits.
-			ne.meta = e.meta &^ (bitValuePointer | bitTxn | bitFinTxn)
+			ne.meta = e.meta &^ (bitValuePointer | bitTxn | bitFinTxn) //下面这几行做一个拼接处理
 			ne.UserMeta = e.UserMeta
 			ne.ExpiresAt = e.ExpiresAt
 			ne.Key = append([]byte{}, e.Key...)
@@ -240,9 +242,9 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 			es += int64(len(e.Value))
 
 			// Ensure length and size of wb is within transaction limits.
-			if int64(len(wb)+1) >= vlog.opt.maxBatchCount ||
+			if int64(len(wb)+1) >= vlog.opt.maxBatchCount || //批量的操作
 				size+es >= vlog.opt.maxBatchSize {
-				if err := vlog.db.batchSet(wb); err != nil {
+				if err := vlog.db.batchSet(wb); err != nil { //把判断有效的KV对重新写回LSM tree以及Vlog（批处理，基本与普通写入流程一致，即伪装成一次批量的写请求）
 					return err
 				}
 				size = 0
@@ -305,7 +307,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		return nil
 	}
 
-	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error {
+	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error { //对Vlog文件内进行迭代
 		return fe(e)
 	})
 	if err != nil {
@@ -314,7 +316,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 
 	batchSize := 1024
 	var loops int
-	for i := 0; i < len(wb); {
+	for i := 0; i < len(wb); { //对于上面那个批处理结束的时候，因未满一个批，仍留在缓冲区中的KV进行处理
 		loops++
 		if batchSize == 0 {
 			vlog.db.opt.Warningf("We shouldn't reach batch size of zero.")
@@ -324,7 +326,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		if end > len(wb) {
 			end = len(wb)
 		}
-		if err := vlog.db.batchSet(wb[i:end]); err != nil {
+		if err := vlog.db.batchSet(wb[i:end]); err != nil { // 伪装成一次批量的写请求，把未处理的处理掉
 			if err == ErrTxnTooBig {
 				// Decrease the batch size to half.
 				batchSize = batchSize / 2
@@ -337,26 +339,27 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 	vlog.opt.Infof("Processed %d entries in %d loops", len(wb), loops)
 	vlog.opt.Infof("Total entries: %d. Moved: %d", count, moved)
 	vlog.opt.Infof("Removing fid: %d", f.fid)
+	//下面就是删除老的一整个的Vlog文件（有用的kv在上面已经移动走了）
 	var deleteFileNow bool
 	// Entries written to LSM. Remove the older file now.
 	{
 		vlog.filesLock.Lock()
 		// Just a sanity-check.
-		if _, ok := vlog.filesMap[f.fid]; !ok {
+		if _, ok := vlog.filesMap[f.fid]; !ok { //先取出来Fid，没取到的话就报已经被删掉了
 			vlog.filesLock.Unlock()
 			return errors.Errorf("Unable to find fid: %d", f.fid)
 		}
 		if vlog.iteratorCount() == 0 {
-			delete(vlog.filesMap, f.fid)
+			delete(vlog.filesMap, f.fid) //先从索引中删除掉
 			deleteFileNow = true
 		} else {
-			vlog.filesToBeDeleted = append(vlog.filesToBeDeleted, f.fid)
+			vlog.filesToBeDeleted = append(vlog.filesToBeDeleted, f.fid) //记录当前Fid曾经存在，但现在被删除了
 		}
 		vlog.filesLock.Unlock()
 	}
 
-	if deleteFileNow {
-		if err := vlog.deleteLogFile(f); err != nil {
+	if deleteFileNow { //是否要现在立即删除Fid
+		if err := vlog.deleteLogFile(f); err != nil { //要立即删除
 			return err
 		}
 	}
@@ -394,6 +397,7 @@ func (vlog *valueLog) decrIteratorCount() error {
 	return nil
 }
 
+// 删除Fid对应文件
 func (vlog *valueLog) deleteLogFile(lf *logFile) error {
 	if lf == nil {
 		return nil
@@ -1010,18 +1014,18 @@ func (vlog *valueLog) pickLog(discardRatio float64) *logFile {
 
 LOOP:
 	// Pick a candidate that contains the largest amount of discardable data
-	fid, discard := vlog.discardStats.MaxDiscard()
+	fid, discard := vlog.discardStats.MaxDiscard() //discard是在磁盘中的一个文件，其会标记哪些KV是可以回收的，也记录 FID:该文件中垃圾KV对数量（每个关系就是一个16bit的slot），而这行是获取一个可回收KV数量最多的日志段
 
 	// MaxDiscard will return fid=0 if it doesn't have any discard data. The
 	// vlog files start from 1.
-	if fid == 0 {
+	if fid == 0 { //没有需要回收的垃圾
 		vlog.opt.Debugf("No file with discard stats")
 		return nil
 	}
-	lf, ok := vlog.filesMap[fid]
+	lf, ok := vlog.filesMap[fid] //取相应的Vlog文件
 	// This file was deleted but it's discard stats increased because of compactions. The file
 	// doesn't exist so we don't need to do anything. Skip it and retry.
-	if !ok {
+	if !ok { //如果没取到vlog文件
 		vlog.discardStats.Update(fid, -1)
 		goto LOOP
 	}
@@ -1031,14 +1035,15 @@ LOOP:
 		vlog.opt.Errorf("Unable to get stats for value log fid: %d err: %+v", fi, err)
 		return nil
 	}
-	if thr := discardRatio * float64(fi.Size()); float64(discard) < thr {
+	if thr := discardRatio * float64(fi.Size()); float64(discard) < thr { // 如果实际需要回收的键值对数量小于设定的阈值
 		vlog.opt.Debugf("Discard: %d less than threshold: %.0f for file: %s",
 			discard, thr, fi.Name())
 		return nil
 	}
-	if fid < vlog.maxFid {
+	if fid < vlog.maxFid { //如果fid小于最大的fid
+		// 则代表这个fid是有效的，下面将需要回收的VLOG文件返回
 		vlog.opt.Infof("Found value log max discard fid: %d discard: %d\n", fid, discard)
-		lf, ok := vlog.filesMap[fid]
+		lf, ok := vlog.filesMap[fid] //再次取相应的Vlog文件（可能是为了并发检查）
 		y.AssertTrue(ok)
 		return lf
 	}
@@ -1048,29 +1053,29 @@ LOOP:
 }
 
 func discardEntry(e Entry, vs y.ValueStruct, db *DB) bool {
-	if vs.Version != y.ParseTs(e.Key) {
+	if vs.Version != y.ParseTs(e.Key) { // vs.Version是LSM的版本，y.ParseTs(e.Key)得到的是GC里面的版本，只要不等于，就把VLOG里面的当成垃圾回收掉
 		// Version not found. Discard.
 		return true
 	}
-	if isDeletedOrExpired(vs.Meta, vs.ExpiresAt) {
+	if isDeletedOrExpired(vs.Meta, vs.ExpiresAt) { // 如果当前key已经过期或者被删除，也返回true
 		return true
 	}
-	if (vs.Meta & bitValuePointer) == 0 {
+	if (vs.Meta & bitValuePointer) == 0 { //判断当前kv是否已经kv分离，等于0代表没有进行KV分离
 		// Key also stores the value in LSM. Discard.
 		return true
 	}
-	if (vs.Meta & bitFinTxn) > 0 {
+	if (vs.Meta & bitFinTxn) > 0 { //事务终止时创建的key也返回true，丢弃
 		// Just a txn finish entry. Discard.
 		return true
 	}
-	return false
+	return false //返回不可回收
 }
 
 func (vlog *valueLog) doRunGC(lf *logFile) error {
 	_, span := otrace.StartSpan(context.Background(), "Badger.GC")
 	span.Annotatef(nil, "GC rewrite for: %v", lf.path)
 	defer span.End()
-	if err := vlog.rewrite(lf); err != nil {
+	if err := vlog.rewrite(lf); err != nil { //对Vlog进行重写
 		return err
 	}
 	// Remove the file from discardStats.
@@ -1090,19 +1095,19 @@ func (vlog *valueLog) waitOnGC(lc *z.Closer) {
 
 func (vlog *valueLog) runGC(discardRatio float64) error {
 	select {
-	case vlog.garbageCh <- struct{}{}:
+	case vlog.garbageCh <- struct{}{}: //这两行做了GC的拥塞控制，同一时间只能有一个GC在运行
 		// Pick a log file for GC.
 		defer func() {
 			<-vlog.garbageCh
 		}()
 
-		lf := vlog.pickLog(discardRatio)
+		lf := vlog.pickLog(discardRatio) // 选择一个Vlog文件（这里得到的是Vlog文件的FID，并不是真的Vlog文件，所以全部是在内存操作的）
 		if lf == nil {
 			return ErrNoRewrite
 		}
 		return vlog.doRunGC(lf)
 	default:
-		return ErrRejected
+		return ErrRejected //GC被拒绝
 	}
 }
 
@@ -1111,7 +1116,7 @@ func (vlog *valueLog) updateDiscardStats(stats map[uint32]int64) {
 		return
 	}
 	for fid, discard := range stats {
-		vlog.discardStats.Update(fid, discard)
+		vlog.discardStats.Update(fid, discard) //将累计的垃圾数据个数更新到统计表中
 	}
 	// The following is to coordinate with some test cases where we want to
 	// verify that at least one iteration of updateDiscardStats has been completed.
