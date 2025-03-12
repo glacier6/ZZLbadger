@@ -143,8 +143,8 @@ func DefaultOptions(path string) Options {
 		BaseTableSize:       2 << 20,  //基础表大小
 		BaseLevelSize:       10 << 20,
 		TableSizeMultiplier: 2,
-		LevelSizeMultiplier: 10,
-		MaxLevels:           7, //7层LSM树高
+		LevelSizeMultiplier: 10, //层间比例
+		MaxLevels:           7,  //7层LSM树高
 		NumGoroutines:       8,
 		MetricsEnabled:      true,
 
