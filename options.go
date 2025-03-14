@@ -75,6 +75,7 @@ type Options struct {
 	NumMemtables   int
 	// Changing BlockSize across DB runs will not break badger. The block size is
 	// read from the block index stored at the end of the table.
+	// 在数据库运行中更改BlockSize不会破坏badger。块大小从存储在表末尾的块索引中读取。
 	BlockSize          int
 	BloomFalsePositive float64
 	BlockCacheSize     int64
@@ -116,6 +117,7 @@ type Options struct {
 
 	// Magic version used by the application using badger to ensure that it doesn't open the DB
 	// with incompatible data format.
+	//应用程序使用獾使用的魔术版本，以确保它不会打开具有不兼容数据格式的数据库。
 	ExternalMagicVersion uint16
 
 	// Transaction start and commit timestamps are managed by end-user.

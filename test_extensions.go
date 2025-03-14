@@ -39,6 +39,7 @@ type testOnlyOptions struct {
 	// syncChan is used to listen for specific messages related to activities
 	// that can occur in a DB instance. Currently, this is only used in
 	// testing activities.
+	// syncChan用于监听与DB实例中可能发生的活动相关的特定消息。目前，这仅用于测试活动
 	syncChan chan string
 }
 

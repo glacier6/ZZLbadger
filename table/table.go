@@ -178,6 +178,7 @@ func (t *Table) DecrRef() error {
 }
 
 // BlockEvictHandler is used to reuse the byte slice stored in the block on cache eviction.
+// BlockEvictHandler用于在缓存驱逐时重用存储在块中的字节切片。
 func BlockEvictHandler(b *Block) {
 	b.decrRef()
 }

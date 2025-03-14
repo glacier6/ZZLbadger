@@ -59,7 +59,7 @@ func createManifest() Manifest {
 	levels := make([]levelManifest, 0) //行级清单
 	return Manifest{
 		Levels: levels,
-		Tables: make(map[uint64]TableManifest), //uint64表行号
+		Tables: make(map[uint64]TableManifest), //uint64表行号，表级清单
 	}
 }
 
@@ -71,10 +71,11 @@ type levelManifest struct {
 
 // TableManifest contains information about a specific table
 // in the LSM tree.
+// TableManifest包含有关LSM树中特别表的信息。
 type TableManifest struct {
 	Level       uint8
 	KeyID       uint64
-	Compression options.CompressionType
+	Compression options.CompressionType // 压缩块的模式
 }
 
 // manifestFile holds the file pointer (and other info) about the manifest file, which is a log
@@ -87,6 +88,7 @@ type manifestFile struct {
 	externalMagic uint16
 
 	// We make this configurable so that unit tests can hit rewrite() code quickly
+	// 我们使其可配置，以便单元测试可以快速重写（）代码
 	deletionsRewriteThreshold int
 
 	// Guards appends, which includes access to the manifest field.
@@ -144,7 +146,7 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 		flags |= y.ReadOnly
 	}
 	fp, err := y.OpenExistingFile(path, flags) // We explicitly sync in addChanges, outside the lock.
-	if err != nil {
+	if err != nil {                            // 如果Manifest不存在的话
 		if !os.IsNotExist(err) {
 			return nil, Manifest{}, err
 		}
@@ -159,7 +161,7 @@ func helpOpenOrCreateManifestFile(dir string, readOnly bool, extMagic uint16,
 		y.AssertTrue(netCreations == 0)
 		mf := &manifestFile{
 			fp:                        fp,
-			directory:                 dir,
+			directory:                 dir, // 清单文件的目录
 			externalMagic:             extMagic,
 			manifest:                  m.clone(),
 			deletionsRewriteThreshold: deletionsThreshold,

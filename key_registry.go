@@ -44,6 +44,7 @@ const (
 var sanityText = []byte("Hello Badger")
 
 // KeyRegistry used to maintain all the data keys.
+// KeyRegistry用于维护所有数据键。
 type KeyRegistry struct {
 	sync.RWMutex
 	dataKeys    map[uint64]*pb.DataKey
@@ -72,6 +73,7 @@ func newKeyRegistry(opt KeyRegistryOptions) *KeyRegistry {
 
 // OpenKeyRegistry opens key registry if it exists, otherwise it'll create key registry
 // and returns key registry.
+// OpenKeyRegistry打开密钥注册表（如果存在），否则它将创建密钥注册表并返回密钥注册表。
 func OpenKeyRegistry(opt KeyRegistryOptions) (*KeyRegistry, error) {
 	// sanity check the encryption key length.
 	if len(opt.EncryptionKey) > 0 {

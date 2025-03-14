@@ -43,6 +43,7 @@ type directoryLockGuard struct {
 // acquireDirectoryLock gets a lock on the directory (using flock). If
 // this is not read-only, it will also write our pid to
 // dirPath/pidFileName for convenience.
+// acquireDirectoryLock获取目录的锁（使用flock）。如果这不是只读的，为了方便起见，它还会将我们的pid写入dirPath/pidFileName。
 func acquireDirectoryLock(dirPath string, pidFileName string, readOnly bool) (
 	*directoryLockGuard, error) {
 	// Convert to absolute path so that Release still works even if we do an unbalanced

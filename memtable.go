@@ -64,7 +64,7 @@ func (db *DB) openMemTables(opt Options) error {
 	}
 
 	var fids []int
-	for _, file := range files {
+	for _, file := range files { // 循环找.mem结尾的文件，然后把文件ID放到fids
 		if !strings.HasSuffix(file.Name(), memFileExt) { // 检查当前LSM目录下文件名是否包含".mem"，包含的才继续执行当轮循环，一般这个文件名字类似为001.mem，这个文件的内容就是LSM Tree的预写日志文件
 			continue
 		}
@@ -80,7 +80,7 @@ func (db *DB) openMemTables(opt Options) error {
 	sort.Slice(fids, func(i, j int) bool { // 把当前得到的.mem文件按照fid进行排序
 		return fids[i] < fids[j]
 	})
-	for _, fid := range fids {
+	for _, fid := range fids { //遍历前面取到的mem文件
 		flags := os.O_RDWR
 		if db.opt.ReadOnly {
 			flags = os.O_RDONLY
@@ -91,11 +91,13 @@ func (db *DB) openMemTables(opt Options) error {
 		}
 		// If this memtable is empty we don't need to add it. This is a
 		// memtable that was completely truncated.
+		// 如果此memtable为空，则不需要添加它。这是一个完全截断的内存表。
 		if mt.sl.Empty() {
 			mt.DecrRef()
 			continue
 		}
 		// These should no longer be written to. So, make them part of the imm.
+		// 这些不应该再写了。所以，让它们成为imm的一部分。
 		db.imm = append(db.imm, mt)
 	}
 	if len(fids) != 0 {
@@ -109,9 +111,9 @@ const memFileExt string = ".mem"
 
 func (db *DB) openMemTable(fid, flags int) (*memTable, error) {
 	filepath := db.mtFilePath(fid)
-	s := skl.NewSkiplist(arenaSize(db.opt))
-	mt := &memTable{
-		sl:  s,
+	s := skl.NewSkiplist(arenaSize(db.opt)) //创建跳表
+	mt := &memTable{                        // 创建memTable对象
+		sl:  s, //这个指跳表
 		opt: db.opt,
 		buf: &bytes.Buffer{},
 	}
@@ -120,14 +122,14 @@ func (db *DB) openMemTable(fid, flags int) (*memTable, error) {
 		return mt, z.NewFile
 	}
 
-	mt.wal = &logFile{
+	mt.wal = &logFile{ // 创建当前Memtable的预写日志结构，内含有一个mmap
 		fid:      uint32(fid),
 		path:     filepath,
 		registry: db.registry,
 		writeAt:  vlogHeaderSize,
 		opt:      db.opt,
 	}
-	lerr := mt.wal.open(filepath, flags, 2*db.opt.MemTableSize)
+	lerr := mt.wal.open(filepath, flags, 2*db.opt.MemTableSize) // 当前函数的核心操作，主要是将.mem文件关联为mmap
 	if lerr != z.NewFile && lerr != nil {
 		return nil, y.Wrapf(lerr, "While opening memtable: %s", filepath)
 	}
@@ -265,9 +267,11 @@ type logFile struct {
 	path string
 	// This is a lock on the log file. It guards the fd’s value, the file’s
 	// existence and the file’s memory map.
-	//
+	// 这是对日志文件的锁定。它保护fd的值、文件的存在和文件的内存映射。
+
 	// Use shared ownership when reading/writing the file or memory map, use
 	// exclusive ownership to open/close the descriptor, unmap or remove the file.
+	// 在读取/写入文件或内存映射时使用共享所有权，使用独占所有权打开/关闭描述符，取消映射或删除文件。
 	lock     sync.RWMutex
 	fid      uint32
 	size     atomic.Uint32
@@ -553,7 +557,7 @@ func (lf *logFile) zeroNextEntry() {
 }
 
 func (lf *logFile) open(path string, flags int, fsize int64) error {
-	mf, ferr := z.OpenMmapFile(path, flags, int(fsize))
+	mf, ferr := z.OpenMmapFile(path, flags, int(fsize)) // 打开或创建一个mmap文件（关联到.Mem文件）
 	lf.MmapFile = mf
 
 	if ferr == z.NewFile {
@@ -572,6 +576,7 @@ func (lf *logFile) open(path string, flags int, fsize int64) error {
 		// Every vlog file should have at least vlogHeaderSize. If it is less than vlogHeaderSize
 		// then it must have been corrupted. But no need to handle here. log replayer will truncate
 		// and bootstrap the logfile. So ignoring here.
+		// 每个vlog文件都应该至少有vlogHeaderSize。如果它小于vlogHeaderSize，那么它一定已损坏。但这里不需要处理。日志重放器将截断并引导日志文件。所以忽略这里。
 		return nil
 	}
 

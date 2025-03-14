@@ -125,8 +125,8 @@ type DB struct {
 
 	pub        *publisher
 	registry   *KeyRegistry
-	blockCache *ristretto.Cache[[]byte, *table.Block]
-	indexCache *ristretto.Cache[uint64, *fb.TableIndex]
+	blockCache *ristretto.Cache[[]byte, *table.Block]   //块缓存
+	indexCache *ristretto.Cache[uint64, *fb.TableIndex] // 索引缓存
 	allocPool  *z.AllocatorPool
 }
 
@@ -190,7 +190,7 @@ func Open(opt Options) (*DB, error) {
 	if err := checkAndSetOptions(&opt); err != nil {
 		return nil, err
 	}
-	var dirLockGuard, valueDirLockGuard *directoryLockGuard //目录锁，防止DB启用需要用的目录后，其余进程也注册到这个目录
+	var dirLockGuard, valueDirLockGuard *directoryLockGuard //目录锁，防止DB启用需要用的目录后，其余进程也注册到这个目录,dirLockGuard是LSM树的文件锁，valueDirLockGuard是Vlog文件锁
 
 	// Create directories and acquire lock on it only if badger is not running in InMemory mode.
 	// We don't have any directories/files in InMemory mode so we don't need to acquire
@@ -201,7 +201,7 @@ func Open(opt Options) (*DB, error) {
 			return nil, err
 		}
 		var err error
-		if !opt.BypassLockGuard {
+		if !opt.BypassLockGuard { // 这if里面是具体的去获得那两个锁
 			dirLockGuard, err = acquireDirectoryLock(opt.Dir, lockFile, opt.ReadOnly)
 			if err != nil {
 				return nil, err
@@ -245,13 +245,13 @@ func Open(opt Options) (*DB, error) {
 	}()
 
 	db := &DB{
-		imm:           make([]*memTable, 0, opt.NumMemtables), //内存表的数组
+		imm:           make([]*memTable, 0, opt.NumMemtables), //内存表的切片数组
 		flushChan:     make(chan *memTable, opt.NumMemtables), //刷请请求的channel
 		writeCh:       make(chan *request, kvWriteChCapacity), //写请求的channel
 		opt:           opt,
 		manifest:      manifestFile,
-		dirLockGuard:  dirLockGuard,      //两个目录锁
-		valueDirGuard: valueDirLockGuard, //两个目录锁
+		dirLockGuard:  dirLockGuard,      //LSM目录锁
+		valueDirGuard: valueDirLockGuard, //VLog目录锁
 		orc:           newOracle(opt),    //KV引擎的并发事物的管理器，分配事务的版本号，Badger实现的是MVCC方式，然后通过Oracle来管理，维护了两个小顶堆，一个提交时间戳，一个读时间戳，只读的话只用后者，而UPDATE二者全用
 		//而这两个时间戳维护也用了watermark（水位）的概念
 		pub:              newPublisher(),
@@ -260,7 +260,7 @@ func Open(opt Options) (*DB, error) {
 		threshold:        initVlogThreshold(&opt),
 	}
 
-	db.syncChan = opt.syncChan
+	db.syncChan = opt.syncChan // 这个只用于测试
 
 	// Cleanup all the goroutines started by badger in case of an error.
 	defer func() {
@@ -271,7 +271,7 @@ func Open(opt Options) (*DB, error) {
 		}
 	}()
 
-	if opt.BlockCacheSize > 0 { //如果允许有块缓存（PS：SSTable内部是按照块分割的）
+	if opt.BlockCacheSize > 0 { //如果允许有块缓存（PS：SSTable内部是按照块分割的），注意badger在运行的时候也可以更改块大小
 		numInCache := opt.BlockCacheSize / int64(opt.BlockSize) //得到有多少块缓存 （块缓存总大小/单块大小）
 		if numInCache == 0 {
 			// Make the value of this variable at least one since the cache requires
@@ -279,20 +279,20 @@ func Open(opt Options) (*DB, error) {
 			numInCache = 1
 		}
 
-		config := ristretto.Config[[]byte, *table.Block]{
-			NumCounters: numInCache * 8,
-			MaxCost:     opt.BlockCacheSize,
+		config := ristretto.Config[[]byte, *table.Block]{ //ristretto是Dgraph社区实现的支持并发高性能的缓存库
+			NumCounters: numInCache * 8,     //缓存块数量
+			MaxCost:     opt.BlockCacheSize, //缓存空间大小
 			BufferItems: 64,
 			Metrics:     true,
 			OnExit:      table.BlockEvictHandler,
 		}
-		db.blockCache, err = ristretto.NewCache[[]byte, *table.Block](&config) //这个是Dgraph社区实现的支持并发高性能的缓存库
+		db.blockCache, err = ristretto.NewCache[[]byte, *table.Block](&config)
 		if err != nil {
 			return nil, y.Wrap(err, "failed to create data cache")
 		}
 	}
 
-	if opt.IndexCacheSize > 0 { // 如果允许有索引缓存，每个SSTable开头会有一个索引块，方便快速的可以对KEY进行二分查找，定位当前的key在哪个SSTable
+	if opt.IndexCacheSize > 0 { // 如果允许有索引缓存，每个SSTable开头会有一个索引块，方便快速的可以对KEY进行二分查找，而这个索引缓存就是迅速定位当前的key在哪个SSTable
 		// Index size is around 5% of the table size.
 		indexSz := int64(float64(opt.MemTableSize) * 0.05)
 		numInCache := opt.IndexCacheSize / indexSz
@@ -315,7 +315,7 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	db.closers.cacheHealth = z.NewCloser(1)
-	go db.monitorCache(db.closers.cacheHealth) //对块缓存的监控
+	go db.monitorCache(db.closers.cacheHealth) //对块缓存与索引缓存的监控，会输出使用率
 
 	if db.opt.InMemory {
 		db.opt.SyncWrites = false
@@ -333,23 +333,24 @@ func Open(opt Options) (*DB, error) {
 	if db.registry, err = OpenKeyRegistry(krOpt); err != nil {
 		return db, err
 	}
-	db.calculateSize()
+	db.calculateSize() // 计算vlog和sst文件的大小，并将其存储在y.LSMSize和y.VlogSize中。
 	db.closers.updateSize = z.NewCloser(1)
-	go db.updateSize(db.closers.updateSize) //计算消耗的内存
+	go db.updateSize(db.closers.updateSize) // 定时去计算vlog和sst文件的大小，并将其存储在y.LSMSize和y.VlogSize中。
 
-	if err := db.openMemTables(db.opt); err != nil {
+	if err := db.openMemTables(db.opt); err != nil { //应该打开的是上一次系统关闭时遗留的一些在Memtable中的数据，注意打开后，直接把这些上次遗留的放到Immemtable
 		return nil, y.Wrapf(err, "while opening memtables")
 	}
 
 	if !db.opt.ReadOnly {
-		if db.mt, err = db.newMemTable(); err != nil {
+		if db.mt, err = db.newMemTable(); err != nil { //创建Memtable，这里有个db.openMemTable，注意与上面的少一个s，这个函数主管创建
 			return nil, y.Wrapf(err, "cannot create memtable")
 		}
 	}
 
+	// zzlTODO:看到这里了
+
 	// 新建一个LevelsController（维护LSM树的level，做日志归并，压缩处理之类的）
-	// 打开各个SST，加载元数据块，索引块等至内存中
-	// newLevelsController potentially loads files in directory.
+	// 就是打开各个已有的SST，加载元数据块，索引块等至内存中
 	if db.lc, err = newLevelsController(db, &manifest); err != nil { // 利用清单做初始信息配置
 		return db, err
 	}
@@ -1179,6 +1180,7 @@ func exists(path string) (bool, error) {
 
 // This function does a filewalk, calculates the size of vlog and sst files and stores it in
 // y.LSMSize and y.VlogSize.
+// 此函数执行文件遍历，计算vlog和sst文件的大小，并将其存储在y.LSMSize和y.VlogSize中。
 func (db *DB) calculateSize() {
 	if db.opt.InMemory {
 		return
