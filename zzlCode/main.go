@@ -16,7 +16,6 @@ func main() {
 	}
 
 	defer db.Close()
-
 	// 读写事物
 	err = db.Update(func(txn *badger.Txn) error {
 		txn.Set([]byte("answer"), []byte("42"))

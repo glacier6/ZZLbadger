@@ -270,10 +270,9 @@ type Txn struct {
 	count    int64
 	db       *DB
 
-	reads []uint64 // contains fingerprints of keys read.
-	// contains fingerprints of keys written. This is used for conflict detection.
-	conflictKeys map[uint64]struct{}
-	readsLock    sync.Mutex // guards the reads slice. See addReadKey.
+	reads        []uint64            //记录当前事务读取了哪些KEY（记录的是key的hash值）
+	conflictKeys map[uint64]struct{} //记录当前事务修改了哪些KEY（同样记录的是key的hash值），用于冲突检查
+	readsLock    sync.Mutex          // guards the reads slice. See addReadKey.
 
 	pendingWrites   map[string]*Entry // cache stores any writes done by txn.
 	duplicateWrites []*Entry          // Used in managed mode to store duplicate entries.
@@ -410,8 +409,8 @@ func (txn *Txn) modify(e *Entry) error {
 	// The txn.conflictKeys is used for conflict detection. If conflict detection
 	// is disabled, we don't need to store key hashes in this map.
 	if txn.db.opt.DetectConflicts {
-		fp := z.MemHash(e.Key) // Avoid dealing with byte arrays.  注意拿得是KEY的HASH值去检查冲突（而这个hash值是由内存地址生成的）
-		txn.conflictKeys[fp] = struct{}{}
+		fp := z.MemHash(e.Key)            // Avoid dealing with byte arrays.  注意拿得是KEY的HASH值去检查冲突（而这个hash值是由内存地址生成的）
+		txn.conflictKeys[fp] = struct{}{} // 这里就是增加写入过的KEY的HASH值来方便之后的冲突检查了
 	}
 	// If a duplicate entry was inserted in managed mode, move it to the duplicate writes slice.
 	// Add the entry to duplicateWrites only if both the entries have different versions. For
@@ -518,12 +517,13 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 
 func (txn *Txn) addReadKey(key []byte) {
 	if txn.update {
-		fp := z.MemHash(key)
+		fp := z.MemHash(key) // 注意拿得是KEY的HASH值（而这个hash值是由内存地址生成的）
 
 		// Because of the possibility of multiple iterators it is now possible
 		// for multiple threads within a read-write transaction to read keys at
 		// the same time. The reads slice is not currently thread-safe and
 		// needs to be locked whenever we mark a key as read.
+		//由于存在多个迭代器的可能性，现在读写事务中的多个线程可以同时读取key。读取切片当前不是线程安全的，每当我们将密钥标记为读取时，都需要锁定它。
 		txn.readsLock.Lock()
 		txn.reads = append(txn.reads, fp) //记录当前事务读取了哪些KEY
 		txn.readsLock.Unlock()
