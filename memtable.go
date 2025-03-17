@@ -558,7 +558,7 @@ func (lf *logFile) zeroNextEntry() {
 
 func (lf *logFile) open(path string, flags int, fsize int64) error {
 	mf, ferr := z.OpenMmapFile(path, flags, int(fsize)) // 打开或创建一个mmap文件（关联到.Mem文件）
-	lf.MmapFile = mf
+	lf.MmapFile = mf                                    //每个vlog对应一个MmapFile
 
 	if ferr == z.NewFile {
 		if err := lf.bootstrap(); err != nil {
@@ -572,7 +572,7 @@ func (lf *logFile) open(path string, flags int, fsize int64) error {
 	}
 	lf.size.Store(uint32(len(lf.Data)))
 
-	if lf.size.Load() < vlogHeaderSize {
+	if lf.size.Load() < vlogHeaderSize { // 如果log文件大小小于最小头大小
 		// Every vlog file should have at least vlogHeaderSize. If it is less than vlogHeaderSize
 		// then it must have been corrupted. But no need to handle here. log replayer will truncate
 		// and bootstrap the logfile. So ignoring here.
@@ -581,12 +581,14 @@ func (lf *logFile) open(path string, flags int, fsize int64) error {
 	}
 
 	// Copy over the encryption registry data.
+	// 复制加密注册表数据。
 	buf := make([]byte, vlogHeaderSize)
 
 	y.AssertTruef(vlogHeaderSize == copy(buf, lf.Data),
 		"Unable to copy from %s, size %d", path, lf.size.Load())
 	keyID := binary.BigEndian.Uint64(buf[:8])
 	// retrieve datakey.
+	// 检索datakey
 	if dk, err := lf.registry.DataKey(keyID); err != nil {
 		return y.Wrapf(err, "While opening vlog file %d", lf.fid)
 	} else {

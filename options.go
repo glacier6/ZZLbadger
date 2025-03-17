@@ -798,6 +798,7 @@ func (opt Options) WithExternalMagic(magic uint16) Options {
 func (opt Options) getFileFlags() int {
 	var flags int
 	// opt.SyncWrites would be using msync to sync. All writes go through mmap.
+	//选择。SyncWrites将使用msync进行同步。所有写入都通过mmap。
 	if opt.ReadOnly {
 		flags |= os.O_RDONLY
 	} else {

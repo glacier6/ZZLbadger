@@ -191,6 +191,7 @@ func newLevelHandler(db *DB, level int) *levelHandler {
 }
 
 // tryAddLevel0Table returns true if ok and no stalling.
+// 如果正常且没有停滞，tryAddLevel0Table返回true。
 func (s *levelHandler) tryAddLevel0Table(t *table.Table) bool {
 	y.AssertTrue(s.level == 0)
 	// Need lock as we may be deleting the first table during a level 0 compaction.

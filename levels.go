@@ -48,7 +48,7 @@ type levelsController struct {
 	levels []*levelHandler
 	kv     *DB
 
-	cstatus compactStatus
+	cstatus compactStatus // 合并状态
 }
 
 // revertToManifest checks that all necessary table files exist and removes all table files not
@@ -80,10 +80,10 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 	y.AssertTrue(db.opt.NumLevelZeroTablesStall > db.opt.NumLevelZeroTables) //断言
 	s := &levelsController{
 		kv:     db,
-		levels: make([]*levelHandler, db.opt.MaxLevels), //创建level数组，下标就是第几层，默认总共是7层，levelHandler管理SSTable
+		levels: make([]*levelHandler, db.opt.MaxLevels), //创建level切片（动态数组），下标就是第几层，默认总共是7层，levelHandler管理SSTable
 	}
-	s.cstatus.tables = make(map[uint64]struct{})
-	s.cstatus.levels = make([]*levelCompactStatus, db.opt.MaxLevels)
+	s.cstatus.tables = make(map[uint64]struct{})                     // cstatus表合并状态
+	s.cstatus.levels = make([]*levelCompactStatus, db.opt.MaxLevels) // levelCompactStatus表层级合并状态，内有keyRange
 
 	for i := 0; i < db.opt.MaxLevels; i++ {
 		s.levels[i] = newLevelHandler(db, i) //每层一个LevelHandler，管理当前层的SSTable
@@ -115,7 +115,7 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 	tick := time.NewTicker(3 * time.Second)
 	defer tick.Stop()
 
-	for fileID, tf := range mf.Tables { //从清单文件中取出各个Table
+	for fileID, tf := range mf.Tables { //从清单文件中取出各个Table,并且初始化每一个.sst结尾的文件关联为一个mmap文件
 		fname := table.NewFilename(fileID, db.opt.Dir)
 		select {
 		case <-tick.C:
@@ -176,7 +176,7 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 		time.Since(start).Round(time.Millisecond))
 	s.nextFileID.Store(maxFileID + 1)
 	for i, tbls := range tables {
-		s.levels[i].initTables(tbls) //初始化LSM树的各层级的SST
+		s.levels[i].initTables(tbls) //初始化LSM树的各层级的SST，主要是排序，0层按文件ID排序，更高层按KEY
 	}
 
 	// Make sure key ranges do not overlap etc.

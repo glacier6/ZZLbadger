@@ -342,42 +342,42 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	if !db.opt.ReadOnly {
-		if db.mt, err = db.newMemTable(); err != nil { //创建Memtable，这里有个db.openMemTable，注意与上面的少一个s，这个函数主管创建
+		if db.mt, err = db.newMemTable(); err != nil { //创建Memtable，这里有个db.openMemTable，注意与上面的少一个s，这个函数主管创建，即之后要使用的MemTable
 			return nil, y.Wrapf(err, "cannot create memtable")
 		}
 	}
 
-	// zzlTODO:看到这里了
-
 	// 新建一个LevelsController（维护LSM树的level，做日志归并，压缩处理之类的）
 	// 就是打开各个已有的SST，加载元数据块，索引块等至内存中
+	// newLevelsController里有每层一个的levelHandler，这个里面有存每层的tables
 	if db.lc, err = newLevelsController(db, &manifest); err != nil { // 利用清单做初始信息配置
 		return db, err
 	}
 
 	// Initialize vlog struct.
-	// 初始化Vlog
+	// 初始化Vlog，就是在外存打开一个DISCARD的文件（用于GC）并关联为mmap文件
 	db.vlog.init(db)
 
 	if !opt.ReadOnly {
 		// 下面是启动LSM Tree的日志归并的协程
 		db.closers.compactors = z.NewCloser(1)
-		db.lc.startCompact(db.closers.compactors)
+		db.lc.startCompact(db.closers.compactors) //启动日志合并
 
 		db.closers.memtable = z.NewCloser(1)
 		go func() {
-			db.flushMemtable(db.closers.memtable) // Need levels controller to be up.
+			db.flushMemtable(db.closers.memtable) // Need levels controller to be up. flushMemtable执行的是将memtable刷到磁盘L0层
+			//内有handleMemTableFlush是做将memtable中的数据刷入磁盘L0层操作的函数
 		}()
 		// Flush them to disk asap.
-		for _, mt := range db.imm {
+		for _, mt := range db.imm { //刷新immemtable到磁盘
 			db.flushChan <- mt
 		}
 	}
 	// We do increment nextTxnTs below. So, no need to do it here.
-	db.orc.nextTxnTs = db.MaxVersion()                    //最大事务的时间戳（最大版本号）
+	db.orc.nextTxnTs = db.MaxVersion()                    //获得当前最大事务的时间戳（最大版本号），通过遍历imm以及等一系列会存储最大版本号的数据
 	db.opt.Infof("Set nextTxnTs to %d", db.orc.nextTxnTs) //打印日志
 
-	if err = db.vlog.open(db); err != nil {
+	if err = db.vlog.open(db); err != nil { // 打开并初始化所有vlog文件
 		return db, y.Wrapf(err, "During db.vlog.open")
 	}
 
@@ -388,7 +388,7 @@ func Open(opt Options) (*DB, error) {
 	db.orc.txnMark.Done(db.orc.nextTxnTs)
 	// In normal mode, we must update readMark so older versions of keys can be removed during
 	// compaction when run in offline mode via the flatten tool.
-	// 在正常模式下，我们必须更新readMark，以便在脱机模式下通过展开工具运行时，可以在压缩过程中删除旧版本的密钥。
+	// 在正常模式下，我们必须更新readMark，以便在脱机模式下通过展开工具运行时，可以在压缩过程中删除旧版本的key。
 	db.orc.readMark.Done(db.orc.nextTxnTs)
 	db.orc.incrementNextTs()
 
@@ -1080,6 +1080,7 @@ func arenaSize(opt Options) int64 {
 }
 
 // buildL0Table builds a new table from the memtable.
+// buildL0Table从memtable构建一个新表。
 func buildL0Table(iter y.Iterator, dropPrefixes [][]byte, bopts table.Options) *table.Builder {
 	defer iter.Close()
 
@@ -1100,15 +1101,17 @@ func buildL0Table(iter y.Iterator, dropPrefixes [][]byte, bopts table.Options) *
 }
 
 // handleMemTableFlush must be run serially.
+// handleMemTableFlush必须连续运行。handleMemTableFlush是做将memtable中的数据刷入磁盘L0层操作的函数
 func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
-	bopts := buildTableOptions(db)
-	itr := mt.sl.NewUniIterator(false)
-	builder := buildL0Table(itr, nil, bopts)
+	bopts := buildTableOptions(db)           //创建一个表配置
+	itr := mt.sl.NewUniIterator(false)       //创建一个迭代器
+	builder := buildL0Table(itr, nil, bopts) //buildL0Table从memtable构建一个新表的构造器。
 	defer builder.Close()
 
 	// buildL0Table can return nil if the none of the items in the skiplist are
 	// added to the builder. This can happen when drop prefix is set and all
 	// the items are skipped.
+	// 如果skiplist中的所有项目都没有添加到table builder中，buildL0Table可以返回nil。当设置了删除前缀并跳过所有项目时，可能会出现这种情况。
 	if builder.Empty() {
 		builder.Finish()
 		return nil
@@ -1121,19 +1124,20 @@ func (db *DB) handleMemTableFlush(mt *memTable, dropPrefixes [][]byte) error {
 		data := builder.Finish()
 		tbl, err = table.OpenInMemoryTable(data, fileID, &bopts)
 	} else {
-		tbl, err = table.CreateTable(table.NewFilename(fileID, db.opt.Dir), builder)
+		tbl, err = table.CreateTable(table.NewFilename(fileID, db.opt.Dir), builder) //从创建器中真正创建table
 	}
 	if err != nil {
 		return y.Wrap(err, "error while creating table")
 	}
 	// We own a ref on tbl.
-	err = db.lc.addLevel0Table(tbl) // This will incrRef
+	err = db.lc.addLevel0Table(tbl) // 将当前创建的表加载到levelcontroler的第0层
 	_ = tbl.DecrRef()               // Releases our ref.
 	return err
 }
 
 // flushMemtable must keep running until we send it an empty memtable. If there
 // are errors during handling the memtable flush, we'll retry indefinitely.
+// flushMemtable必须继续运行，直到我们向它发送一个空的memtable。如果在处理memtable刷新过程中出现错误，我们将无限期重试。
 func (db *DB) flushMemtable(lc *z.Closer) {
 	defer lc.Done()
 

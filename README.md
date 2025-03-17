@@ -10,6 +10,10 @@ BadgerDB的一些需要关注点
 3.有两级缓存，一级索引的缓存，一个块的缓存
 4.数据可能在内存，也可能在外存，也可能在事务中，共三类。而对这三类查找时，每类均会有一个迭代器，每个迭代器的实现方式也不一样
 
+一些简称
+lc levercontroler 层级管理器
+lf logFile log文件对象
+
 
 mmap是什么？及其特性，关键点 （BadgerDB内也使用了mmap，如Table,discardStats,logFile等都是由mmap实现的，可以搜索MmapFile来定位）
 详见 https://baijiahao.baidu.com/s?id=1676499929976516330&wfr=spider&for=pc

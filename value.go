@@ -578,11 +578,11 @@ func (vlog *valueLog) open(db *DB) error {
 		if vlog.opt.ReadOnly {
 			return nil
 		}
-		_, err := vlog.createVlogFile() //没有Vlog文件，需要创建一个
+		_, err := vlog.createVlogFile() //没有Vlog文件，需要创建一个logFile
 		return y.Wrapf(err, "Error while creating log file in valueLog.open")
 	}
-	fids := vlog.sortedFids()
-	for _, fid := range fids {
+	fids := vlog.sortedFids()  // 按fid排序好vlog文件
+	for _, fid := range fids { //  处理排序好的vlog文件
 		lf, ok := vlog.filesMap[fid]
 		y.AssertTrue(ok)
 
@@ -593,7 +593,7 @@ func (vlog *valueLog) open(db *DB) error {
 			return y.Wrapf(err, "Open existing file: %q", lf.path)
 		}
 		// We shouldn't delete the maxFid file.
-		if lf.size.Load() == vlogHeaderSize && fid != vlog.maxFid {
+		if lf.size.Load() == vlogHeaderSize && fid != vlog.maxFid { //删除空的（即只有头大小的vlog文件）
 			vlog.opt.Infof("Deleting empty file: %s", lf.path)
 			if err := lf.Delete(); err != nil {
 				return y.Wrapf(err, "while trying to delete empty file: %s", lf.path)
@@ -608,21 +608,23 @@ func (vlog *valueLog) open(db *DB) error {
 	// Now we can read the latest value log file, and see if it needs truncation. We could
 	// technically do this over all the value log files, but that would mean slowing down the value
 	// log open.
+	// 现在我们可以读取最新的值日志文件，并查看它是否需要截断。从技术上讲，我们可以对所有值日志文件执行此操作，但这意味着打开值日志的速度会减慢。
 	last, ok := vlog.filesMap[vlog.maxFid]
 	y.AssertTrue(ok)
-	lastOff, err := last.iterate(vlog.opt.ReadOnly, vlogHeaderSize,
+	lastOff, err := last.iterate(vlog.opt.ReadOnly, vlogHeaderSize, //获取实际大小
 		func(_ Entry, vp valuePointer) error {
 			return nil
 		})
 	if err != nil {
 		return y.Wrapf(err, "while iterating over: %s", last.path)
 	}
-	if err := last.Truncate(int64(lastOff)); err != nil {
+	if err := last.Truncate(int64(lastOff)); err != nil { //按照实际大小截断这个最新的vlog文件
 		return y.Wrapf(err, "while truncating last value log file: %s", last.path)
 	}
 
 	// Don't write to the old log file. Always create a new one.
-	if _, err := vlog.createVlogFile(); err != nil {
+	// 不要写入旧日志文件。总是创建一个新的。
+	if _, err := vlog.createVlogFile(); err != nil { // 创建一个新的活跃的vlog文件
 		return y.Wrapf(err, "Error while creating log file in valueLog.open")
 	}
 	return nil
