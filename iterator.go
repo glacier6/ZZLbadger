@@ -472,6 +472,10 @@ type Iterator struct {
 // iterator was created. If writes are performed after an iterator is created, then that iterator
 // will not be able to see those writes. Only writes performed before an iterator was created can be
 // viewed.
+
+// badger 继承了 leveldb 中 iterator 组合的思想，把 pendingWrites 的读取链路封装为了 Iterator，
+// 并与 MemTableIterator、TableIterator 等 Iterator 通过 MergeIterator 组合为最终的 Iterator
+// badger 会将 commitTs 作为 key 的后缀存储到 LSM Tree 中，Iterator 在迭代中也会对时间戳有感知，按 readTs 时刻的快照数据进行迭代。
 func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	if txn.discarded {
 		panic(ErrDiscardedTxn)

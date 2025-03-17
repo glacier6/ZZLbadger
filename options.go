@@ -123,6 +123,9 @@ type Options struct {
 	// Transaction start and commit timestamps are managed by end-user.
 	// This is only useful for databases built on top of Badger (like Dgraph).
 	// Not recommended for most users.
+	// 事务开始和提交时间戳由最终用户管理。
+	// 这仅适用于基于Badger构建的数据库（如Dgraph）。
+	// 不建议大多数用户使用。
 	managedTxns bool
 
 	// 4. Flags for testing purposes

@@ -55,14 +55,12 @@ type oracle struct {
 	readMark  *y.WaterMark // Used by DB.
 
 	// committedTxns contains all committed writes (contains fingerprints
-	// committedTxns包含所有已提交的写入
 	// of keys written and their latest commit counter).
-	// 写入的密钥及其最新提交计数器
-	committedTxns []committedTxn
+	committedTxns []committedTxn // committedTxns包含近期的已提交事务的信息
 	lastCleanupTs uint64
 
 	// closer is used to stop watermarks.
-	// closer用于阻止水印
+	// closer用于控制水位
 	closer *z.Closer
 }
 
@@ -98,18 +96,23 @@ func (o *oracle) readTs() uint64 { // 利用时间辍作事务的版本号
 		panic("ReadTs should not be retrieved for managed DB")
 	}
 
-	var readTs uint64 // TODO:readTs 是时间戳？
-	o.Lock()
+	var readTs uint64 // TODO:readTs 是时间戳，但是注意不是物理时间戳，是逻辑上的版本号
+	o.Lock()          //获取版本号需要加锁
 	readTs = o.nextTxnTs - 1
 	o.readMark.Begin(readTs) // 标记当前事务已经进入开始读的阶段
+	// readMark 与 txnMark 一样是一个 WaterMark 结构体 。
+	// 但它没有利用 WaterMark 结构体等待点位的能力，只利用它的堆数据结构来跟踪当前活跃的事务的时间戳范围，用于找出哪些事务可以过期回收。
 	o.Unlock()
 
 	// Wait for all txns which have no conflicts, have been assigned a commit
 	// timestamp and are going through the write to value log and LSM tree
 	// process. Not waiting here could mean that some txns which have been
 	// committed would not be read.
-	//等待所有没有冲突、已分配提交时间戳并且正在进行写值日志和LSM树过程的txn（判断标准是比当前读时间戳小的txn）。不在这里等待可能意味着一些已提交的txn将不会被读取。
+
+	// 等待所有已分配提交时间戳并且正在进行写值日志和LSM树过程落盘的txn（判断标准是比当前读时间戳小的txn）。
+	// 不在这里等待可能意味着一些已提交的txn将不会被读取，即读取到旧版本的数据
 	y.Check(o.txnMark.WaitForMark(context.Background(), readTs))
+	// txnMarkt 字段是 WaterMark 结构体类型，它内部会维护一个堆数据结构，可以用于跟踪事务的时间戳区段的变化通知。
 	return readTs
 }
 
@@ -148,14 +151,14 @@ func (o *oracle) hasConflict(txn *Txn) bool {
 	if len(txn.reads) == 0 {
 		return false
 	}
-	for _, committedTxn := range o.committedTxns { // committedTxns是活跃事务的数组
+	for _, committedTxn := range o.committedTxns { // committedTxns 数组记录近期的已提交事务的信息
 		// If the committedTxn.ts is less than txn.readTs that implies that the
 		// committedTxn finished before the current transaction started.
 		// We don't need to check for conflict in that case.
 		// This change assumes linearizability. Lack of linearizability could
 		// cause the read ts of a new txn to be lower than the commit ts of
 		// a txn before it (@mrjn).
-		// 如果commitedTxn.ts小于txn.readTs，则意味着commitedTxn在当前事务开始之前完成。
+		// 如果commitedTxn.ts小于当前txn.readTs，则意味着commitedTxn在当前事务开始之前完成。
 		// 在这种情况下，我们不需要检查冲突。这种变化假设了线性化。缺乏线性化可能会导致新txn的读取ts低于之前txn的提交ts
 		if committedTxn.ts <= txn.readTs {
 			continue
@@ -163,7 +166,7 @@ func (o *oracle) hasConflict(txn *Txn) bool {
 
 		for _, ro := range txn.reads {
 			if _, has := committedTxn.conflictKeys[ro]; has {
-				return true // 比当前事务时间戳大的，且对当前读取的key进行过写入，就会产生冲突
+				return true // 如果遍历的已提交事务比当前事务的readTs大的，且对当前事务读取过的key进行过写入，就会产生冲突
 			}
 		}
 	}
@@ -176,7 +179,7 @@ func (o *oracle) newCommitTs(txn *Txn) (uint64, bool) {
 	o.Lock()
 	defer o.Unlock()
 
-	if o.hasConflict(txn) { //检查活跃的并发执行的事务是否有冲突
+	if o.hasConflict(txn) { //检查活跃的并发执行的事务是否有冲突，冲突检测的逻辑很简单，遍历 committedTxns，找出当前事务开始之后提交的事务，判断自己读到的 key 中，是否存在于其他事务的写列表中
 		return 0, true
 	}
 
@@ -197,10 +200,11 @@ func (o *oracle) newCommitTs(txn *Txn) (uint64, bool) {
 
 	y.AssertTrue(ts >= o.lastCleanupTs)
 
-	if o.detectConflicts {
+	if o.detectConflicts { //是否进行冲突检查
 		// We should ensure that txns are not added to o.committedTxns slice when
 		// conflict detection is disabled otherwise this slice would keep growing.
-		o.committedTxns = append(o.committedTxns, committedTxn{ // committedTxns存的是读阶段完成，但是提交阶段还未完成的事务
+		// 我们应该确保在禁用冲突检测时，txns不会添加到o.commitedTxns切片中，否则该切片将继续增长。
+		o.committedTxns = append(o.committedTxns, committedTxn{ // committedTxns包含近期的已提交事务的信息
 			ts:           ts,
 			conflictKeys: txn.conflictKeys,
 		})
@@ -216,6 +220,7 @@ func (o *oracle) doneRead(txn *Txn) {
 	}
 }
 
+// 清理committedTxns数组
 func (o *oracle) cleanupCommittedTransactions() { // Must be called under o.Lock
 	if !o.detectConflicts {
 		// When detectConflicts is set to false, we do not store any
@@ -468,7 +473,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 
 	item = new(Item)
 	if txn.update { // 如果是读写事务
-		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否pendingWrites，如果在，下面就直接拼装返回
+		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否在pendingWrites（就是判断是否是当前事务之前提交过的数据），如果在，下面就直接拼装返回
 			if isDeletedOrExpired(e.meta, e.ExpiresAt) {
 				return nil, ErrKeyNotFound
 			}
@@ -488,8 +493,8 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 		txn.addReadKey(key) // 标记当前KEY是读取的
 	}
 
-	//下面就是没直接找到，去LSM TREE取相应的key了
-	seek := y.KeyWithTs(key, txn.readTs) // key后拼接读取时间戳
+	//下面就是没在当前事务历史操作内直接找到，去LSM TREE取相应的key了
+	seek := y.KeyWithTs(key, txn.readTs) // key后拼接读取时间戳（亦指事务的开始时间戳）
 	vs, err := txn.db.get(seek)
 	if err != nil {
 		return nil, y.Wrapf(err, "DB::Get key: %q", key)
@@ -553,9 +558,9 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 	orc.writeChLock.Lock()
 	defer orc.writeChLock.Unlock()
 
-	commitTs, conflict := orc.newCommitTs(txn)
+	commitTs, conflict := orc.newCommitTs(txn) //让orc进行冲突检测和过期事务清理，如果无冲突，获取授时 commitTs，并将当前事务添加到 commitedTxns
 	if conflict {
-		return nil, ErrConflict
+		return nil, ErrConflict //有冲突，返回错误（貌似是一路返回到客户端，并不做纠错处理？）
 	}
 
 	keepTogether := true
@@ -566,6 +571,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 			keepTogether = false
 		}
 	}
+	//下面两个for循环是为 pendingWrites 和 duplicateWrites 中的 Entry 的 version 绑定 commitTs
 	for _, e := range txn.pendingWrites {
 		setVersion(e)
 	}
@@ -577,7 +583,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 
 	entries := make([]*Entry, 0, len(txn.pendingWrites)+len(txn.duplicateWrites)+1)
 
-	processEntry := func(e *Entry) {
+	processEntry := func(e *Entry) { // 使Entry存储的 key 绑定 commitTs（Entry是存储单个kv对的数据结构）
 		// Suffix the keys with commit ts, so the key versions are sorted in
 		// descending order of commit timestamp.
 		e.Key = y.KeyWithTs(e.Key, e.version)
@@ -615,10 +621,10 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		}
 		entries = append(entries, e)
 	}
-
-	req, err := txn.db.sendToWriteCh(entries)
+	// entries 是pendingWrites与duplicateWrites两个缓冲区经过处理（如为key绑定commitTs）后的合并体
+	req, err := txn.db.sendToWriteCh(entries) //进行落盘操作
 	if err != nil {
-		orc.doneCommit(commitTs)
+		orc.doneCommit(commitTs) //落盘完成后，告诉orc当前commitTs已经完成，让其更新水位信息，即移动 txnMark 的点位。且诺有等待的新事务请求readTs则其会通知其的WaitForMark函数
 		return nil, err
 	}
 	ret := func() error {
@@ -682,18 +688,18 @@ func (txn *Txn) commitPrecheck() error {
 func (txn *Txn) Commit() error {
 	// txn.conflictKeys can be zero if conflict detection is turned off. So we
 	// should check txn.pendingWrites.
-	if len(txn.pendingWrites) == 0 { //判断当前txn是否有set操作发生过
+	if len(txn.pendingWrites) == 0 { //判断当前txn是否有写入操作发生过
 		// Discard the transaction so that the read is marked done.
 		txn.Discard()
 		return nil
 	}
 	// Precheck before discarding txn.
-	if err := txn.commitPrecheck(); err != nil { //这行做提交时的预处理检查
+	if err := txn.commitPrecheck(); err != nil { //提交前的预处理检查
 		return err
 	}
 	defer txn.Discard() //这个函数可以反复调用
 
-	txnCb, err := txn.commitAndSend() //提交到orical对象（orc）里，告知事务时间戳已经提交了，你需要更新水位线，使比当前水位线小的事务往下执行（保证事务的一致性）
+	txnCb, err := txn.commitAndSend() //核心操作，提交到orical对象（orc）里，告知事务时间戳已经提交了，你需要更新水位线，使比当前水位线小的事务往下执行（保证事务的一致性）
 	if err != nil {
 		return err
 	}
@@ -809,10 +815,10 @@ func (db *DB) newTransaction(update, isManaged bool) *Txn {
 		if db.opt.DetectConflicts {
 			txn.conflictKeys = make(map[uint64]struct{}) // 这个map对进行修改的key进行记录，使用map也是方便其他事务进行冲突检查
 		}
-		txn.pendingWrites = make(map[string]*Entry) //所有当前事务插入新key的操作在这里记录
+		txn.pendingWrites = make(map[string]*Entry) //所有当前事务写入的操作在这里记录
 	}
 	if !isManaged {
-		txn.readTs = db.orc.readTs()
+		txn.readTs = db.orc.readTs() //为当前新增的事务授时，即记录开始时间戳，因为常用于读取数据，所以也叫读取时间戳（直接复制来自 oracle 对象的 nextTxnTs 字段中记录的当前时间戳即可。）
 	}
 	return txn
 }
@@ -820,7 +826,7 @@ func (db *DB) newTransaction(update, isManaged bool) *Txn {
 // View executes a function creating and managing a read-only transaction for the user. Error
 // returned by the function is relayed by the View method.
 // If View is used with managed transactions, it would assume a read timestamp of MaxUint64.
-func (db *DB) View(fn func(txn *Txn) error) error { //处理只读事务，只读事务除了begin等少数操作，不会阻塞其他事物？
+func (db *DB) View(fn func(txn *Txn) error) error { //处理只读事务，只读事务除了begin等少数操作，不会阻塞其他事务
 	if db.IsClosed() {
 		return ErrDBClosed
 	}
@@ -848,7 +854,7 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 	txn := db.NewTransaction(true) //创建一个事物对象
 	defer txn.Discard()            //等运行结束时，关闭事务
 
-	if err := fn(txn); err != nil {
+	if err := fn(txn); err != nil { //执行传入的函数体
 		return err
 	}
 

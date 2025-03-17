@@ -23,7 +23,7 @@ func main() {
 		txn.Get([]byte("answer"))
 		return nil
 	})
-	// 只读事物
+	// 只读事务
 	err = db.View(func(txn *badger.Txn) error {
 		txn.Get([]byte("answer"))
 		return nil
