@@ -885,7 +885,7 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 
 	db.opt.Debugf("Writing to memtable")
 	var count int
-	for _, b := range reqs {
+	for _, b := range reqs { // 写入LSM中
 		if len(b.Entries) == 0 {
 			continue
 		}
@@ -936,12 +936,13 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 
 	// We can only service one request because we need each txn to be stored in a contiguous section.
 	// Txns should not interleave among other txns or rewrites.
+	// 我们只能为一个请求提供服务，因为我们需要将每个txn存储在连续的部分中。Txns不应与其他Txns交织或重写。
 	req := requestPool.Get().(*request)
 	req.reset()
 	req.Entries = entries
 	req.Wg.Add(1)
 	req.IncrRef()     // for db write
-	db.writeCh <- req // Handled in doWrites.
+	db.writeCh <- req // Handled in doWrites.交给doWrites来处理
 	y.NumPutsAdd(db.opt.MetricsEnabled, int64(len(entries)))
 
 	return req, nil
@@ -949,30 +950,31 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 
 func (db *DB) doWrites(lc *z.Closer) {
 	defer lc.Done()
-	pendingCh := make(chan struct{}, 1) // 一个缓冲区的chan
+	pendingCh := make(chan struct{}, 1) // 一个缓冲区的chan，里面不放具体数据，只是用来阻塞用的
 
 	writeRequests := func(reqs []*request) {
 		if err := db.writeRequests(reqs); err != nil {
 			db.opt.Errorf("writeRequests: %v", err)
 		}
-		<-pendingCh // 将那一个缓冲区释放，表示当前这一个写请求已经完成了
+		<-pendingCh // 将那一个缓冲区释放，表示当前这一个写请求已经完成了（箭头左边不放东西就是单纯释放掉了）
 	}
 
 	// This variable tracks the number of pending writes.
+	// 此变量跟踪挂起的写入次数。
 	reqLen := new(expvar.Int) // 获取写请求的长度
 	y.PendingWritesSet(db.opt.MetricsEnabled, db.opt.Dir, reqLen)
 
-	reqs := make([]*request, 0, 10) // 攒了10次才会去写
+	reqs := make([]*request, 0, 10) // 最多攒了10次再去写
 	for {
 		var r *request
-		select {
-		case r = <-db.writeCh:
+		select { //GO的select专用于通道处理的，每个case对应一个通道操作，若某个能执行，则就执行哪一个，多个能执行的，随机选一个执行！即只执行一个
+		case r = <-db.writeCh: //读出来sendToWriteCh函数（即写入函数）传过来的那个写请求
 		case <-lc.HasBeenClosed():
-			goto closedCase
+			goto closedCase //注意goto只是语句执行转移（可以跳出循环，如下），而不是开启协程
 		}
 
-		for {
-			reqs = append(reqs, r) //将当前写请求加入累计数组
+		for { //无限循环
+			reqs = append(reqs, r) //将前面读出来的写请求加入累计数组
 			reqLen.Set(int64(len(reqs)))
 
 			if len(reqs) >= 3*kvWriteChCapacity { // 是否大于KV写缓存的容量长度（kvWriteChCapacity是常量固定1000）
@@ -982,17 +984,20 @@ func (db *DB) doWrites(lc *z.Closer) {
 
 			select {
 			// Either push to pending, or continue to pick from writeCh.
-			case r = <-db.writeCh:
-			case pendingCh <- struct{}{}:
+			// 要么推到待定，要么继续从writeCh中选择。
+			case r = <-db.writeCh: //继续读写请求
+			case pendingCh <- struct{}{}: //阻塞去处理写请求
 				goto writeCase
 			case <-lc.HasBeenClosed():
 				goto closedCase
 			}
 		}
 
-	closedCase:
+	closedCase: //这个貌似是在系统关闭的时候才会用到？
 		// All the pending request are drained.
 		// Don't close the writeCh, because it has be used in several places.
+		//所有待处理的请求都被清空。
+		//不要关闭writeCh，因为它已在多个地方使用过。
 		for {
 			select {
 			case r = <-db.writeCh:
@@ -1004,7 +1009,7 @@ func (db *DB) doWrites(lc *z.Closer) {
 			}
 		}
 
-	writeCase:
+	writeCase: //已经达到需要处理的地步，开始处理
 		go writeRequests(reqs)         //另外开一个协程，异步的去处理当前累积的写请求
 		reqs = make([]*request, 0, 10) //清空当前写请求数组
 		reqLen.Set(0)

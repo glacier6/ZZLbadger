@@ -113,7 +113,7 @@ func (w *WaterMark) LastIndex() uint64 {
 
 // WaitForMark waits until the given index is marked as done.
 func (w *WaterMark) WaitForMark(ctx context.Context, index uint64) error {
-	if w.DoneUntil() >= index { //如果当前已提交的最大事务时间戳大于等于当前时间戳，则返回就可以了，否则就往后执行，等满足了再唤醒
+	if w.DoneUntil() >= index { //如果当前已提交的最大事务时间戳大于等于当前创建的readTs时间戳，则返回就可以了，否则就往后执行，等满足了再唤醒
 		return nil
 	}
 	waitCh := make(chan struct{})

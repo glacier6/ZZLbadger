@@ -78,8 +78,8 @@ func newOracle(opt Options) *oracle {
 		//
 		// WaterMarks must be 64-bit aligned for atomic package, hence we must use pointers here.
 		// See https://golang.org/pkg/sync/atomic/#pkg-note-BUG.
-		readMark: &y.WaterMark{Name: "badger.PendingReads"}, //读取的时间戳，下面这三行都是并发控制的
-		txnMark:  &y.WaterMark{Name: "badger.TxnTimestamp"}, //提交的时间戳，txn在badger里面是事务的缩写
+		readMark: &y.WaterMark{Name: "badger.PendingReads"}, //读取的时间戳堆，下面这三行都是并发控制的
+		txnMark:  &y.WaterMark{Name: "badger.TxnTimestamp"}, //提交的时间戳堆
 		closer:   z.NewCloser(2),
 	}
 	orc.readMark.Init(orc.closer)
@@ -185,8 +185,8 @@ func (o *oracle) newCommitTs(txn *Txn) (uint64, bool) {
 
 	var ts uint64
 	if !o.isManaged {
-		o.doneRead(txn)                  //标记完成
-		o.cleanupCommittedTransactions() //清理已提交的事务
+		o.doneRead(txn)                  //通知readMark完成
+		o.cleanupCommittedTransactions() //触发清理committedTxns的函数
 
 		// This is the general case, when user doesn't specify the read and commit ts.
 		ts = o.nextTxnTs
@@ -204,7 +204,7 @@ func (o *oracle) newCommitTs(txn *Txn) (uint64, bool) {
 		// We should ensure that txns are not added to o.committedTxns slice when
 		// conflict detection is disabled otherwise this slice would keep growing.
 		// 我们应该确保在禁用冲突检测时，txns不会添加到o.commitedTxns切片中，否则该切片将继续增长。
-		o.committedTxns = append(o.committedTxns, committedTxn{ // committedTxns包含近期的已提交事务的信息
+		o.committedTxns = append(o.committedTxns, committedTxn{ // committedTxns包含近期的已提交事务的信息，在这里就加过去
 			ts:           ts,
 			conflictKeys: txn.conflictKeys,
 		})
@@ -221,6 +221,7 @@ func (o *oracle) doneRead(txn *Txn) {
 }
 
 // 清理committedTxns数组
+// 其会清理掉比commitTs比当前活跃事务中最早的readTs还要早的事务
 func (o *oracle) cleanupCommittedTransactions() { // Must be called under o.Lock
 	if !o.detectConflicts {
 		// When detectConflicts is set to false, we do not store any
@@ -232,13 +233,15 @@ func (o *oracle) cleanupCommittedTransactions() { // Must be called under o.Lock
 	if o.isManaged {
 		maxReadTs = o.discardTs
 	} else {
-		maxReadTs = o.readMark.DoneUntil() //获取读取事务的水位来当作最大读时间戳，小于这个的表示已经全部提交
+		maxReadTs = o.readMark.DoneUntil() // 在 readMark 堆中获取当前活跃事务的最早 readTs
 	}
 
 	y.AssertTrue(maxReadTs >= o.lastCleanupTs)
 
 	// do not run clean up if the maxReadTs (read timestamp of the
 	// oldest transaction that is still in flight) has not increased
+	// 如果maxReadTs（仍在运行的最旧事务的ReadTs）没有增加，则不运行清理
+	// 即oracle 会记录 lastCleanupTs 记录上次清理的时间戳，避免不必要的清理操作。
 	if maxReadTs == o.lastCleanupTs {
 		return
 	}
@@ -377,7 +380,7 @@ func exceedsSize(prefix string, max int64, key []byte) error {
 func (txn *Txn) modify(e *Entry) error {
 	const maxKeySize = 65000 // key的长度是uint32的长度，所以其最大是65535，而剩下的535是因为badger会在key后面拼接上一个时间戳
 
-	// 对于kv的检查
+	// 对于kv的检查，看是否合法
 	switch {
 	case !txn.update:
 		return ErrReadOnlyTxn
@@ -415,8 +418,9 @@ func (txn *Txn) modify(e *Entry) error {
 	// If a duplicate entry was inserted in managed mode, move it to the duplicate writes slice.
 	// Add the entry to duplicateWrites only if both the entries have different versions. For
 	// same versions, we will overwrite the existing entry.
-	if oldEntry, ok := txn.pendingWrites[string(e.Key)]; ok && oldEntry.version != e.version { //同一个key Set了两次（版本号不一样），那么就放到下面这个数组里面
-		txn.duplicateWrites = append(txn.duplicateWrites, oldEntry)
+	// 如果在托管模式下插入了重复条目，请将其移动到重复写入切片。仅当两个条目具有不同版本时，才将条目添加到duplicateWrites。对于相同的版本，我们将覆盖现有条目。
+	if oldEntry, ok := txn.pendingWrites[string(e.Key)]; ok && oldEntry.version != e.version { //如果在托管模式下，若同一个key 写入了两次（但是版本号不一样），那么就把老版本的放到下面这个计算重复写入的数组里面
+		txn.duplicateWrites = append(txn.duplicateWrites, oldEntry) // 因为如果不放入的话，老版就会被覆盖清理掉
 	}
 	txn.pendingWrites[string(e.Key)] = e
 	return nil
@@ -473,7 +477,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 	item = new(Item)
 	if txn.update { // 如果是读写事务
 		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否在pendingWrites（就是判断是否是当前事务之前提交过的数据），如果在，下面就直接拼装返回
-			if isDeletedOrExpired(e.meta, e.ExpiresAt) {
+			if isDeletedOrExpired(e.meta, e.ExpiresAt) { // 在，且没有过期就开始拼装返回
 				return nil, ErrKeyNotFound
 			}
 			// Fulfill from cache.
@@ -563,7 +567,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		return nil, ErrConflict //有冲突，返回错误（貌似是一路返回到客户端，并不做纠错处理？）
 	}
 
-	keepTogether := true
+	keepTogether := true           // true为非托管模式，这个是在托管模式下用的东西，在这个模式下，单个事务可以有不同时间戳的条目，托管模式（managed mode）是干啥的还需要再看
 	setVersion := func(e *Entry) { //在KEY后拼接版本号，这里是一个闭包
 		if e.version == 0 {
 			e.version = commitTs
@@ -577,6 +581,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 	}
 	// The duplicateWrites slice will be non-empty only if there are duplicate
 	// entries with different versions.
+	// 只有当存在具有不同版本的重复条目时，duplexeWrites切片才会非空。
 	for _, e := range txn.duplicateWrites {
 		setVersion(e)
 	}
@@ -592,6 +597,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		// transaction can have entries with different timestamps. If entries
 		// in a single transaction have different timestamps, we don't add the
 		// transaction markers.
+		// 仅当这些条目是事务的一部分时，才添加bitTxn。我们在托管模式下支持SetEntryAt（..），这意味着单个事务可以有不同时间戳的条目。如果单个事务中的条目具有不同的时间戳，我们不会添加事务标记。
 		if keepTogether {
 			e.meta |= bitTxn
 		}
@@ -622,9 +628,9 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		entries = append(entries, e)
 	}
 	// entries 是pendingWrites与duplicateWrites两个缓冲区经过处理（如为key绑定commitTs）后的合并体
-	req, err := txn.db.sendToWriteCh(entries) //进行落盘操作
-	if err != nil {
-		orc.doneCommit(commitTs) //落盘完成后，告诉orc当前commitTs已经完成，让其更新水位信息，即移动 txnMark 的点位。且诺有等待的新事务请求readTs则其会通知其的WaitForMark函数
+	req, err := txn.db.sendToWriteCh(entries) //进行落盘操作，req是返回的回调函数
+	if err != nil {                           //报错了
+		orc.doneCommit(commitTs) //告诉orc当前commitTs已经提交完成，让其更新水位信息，即移动 txnMark 的点位。且诺有等待的新事务请求readTs则其会通知其的WaitForMark函数
 		return nil, err
 	}
 	ret := func() error {
@@ -632,7 +638,8 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		// Wait before marking commitTs as done.
 		// We can't defer doneCommit above, because it is being called from a
 		// callback here.
-		orc.doneCommit(commitTs) //告诉orc水位信息，标记完成
+		// 在将commitTs标记为已完成之前等待。我们不能推迟上面的doneCommit，因为它是从这里的回调调用的。
+		orc.doneCommit(commitTs) //告诉orc当前commitTs已经提交完成，让其更新水位信息，即移动 txnMark 的点位。且诺有等待的新事务请求readTs则其会通知其的WaitForMark函数
 		return err
 	}
 	return ret, nil
@@ -654,6 +661,8 @@ func (txn *Txn) commitPrecheck() error {
 	// someone uses txn.Commit instead of txn.CommitAt in managed mode.  This
 	// should happen only in managed mode. In normal mode, keepTogether will
 	// always be true.
+	// 如果keepTogether为True，则意味着将添加事务标记。
+	// 在这种情况下，commitTs不应该永远为零。如果有人使用txn，可能会发生这种情况。提交而不是txn。以托管模式提交。这应该只在托管模式下发生。在正常模式下，keepTogether始终为真。
 	if keepTogether && txn.db.opt.managedTxns && txn.commitTs == 0 {
 		return errors.New("CommitTs cannot be zero. Please use commitAt instead")
 	}
@@ -688,7 +697,7 @@ func (txn *Txn) commitPrecheck() error {
 func (txn *Txn) Commit() error {
 	// txn.conflictKeys can be zero if conflict detection is turned off. So we
 	// should check txn.pendingWrites.
-	if len(txn.pendingWrites) == 0 { //判断当前txn是否有写入操作发生过
+	if len(txn.pendingWrites) == 0 { //判断当前txn是否有写入操作发生过，为空直接返回
 		// Discard the transaction so that the read is marked done.
 		txn.Discard()
 		return nil

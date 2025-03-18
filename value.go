@@ -767,17 +767,17 @@ func (vlog *valueLog) woffset() uint32 {
 validateWrites将检查给定的请求是否可以放入4GB的vlog文件中。注意：4GB是我们可以为vlog创建的最大大小，因为值指针偏移量的类型是uint32。如果我们创建超过4GB，它将溢出uint32。因此，将大小限制为4GB。
 */
 func (vlog *valueLog) validateWrites(reqs []*request) error {
-	vlogOffset := uint64(vlog.woffset())
+	vlogOffset := uint64(vlog.woffset()) // 这里是得到当前活跃的vlog文件的当前偏移量
 	for _, req := range reqs {
 		// calculate size of the request.
-		size := estimateRequestSize(req)
-		estimatedVlogOffset := vlogOffset + size
-		if estimatedVlogOffset > uint64(maxVlogFileSize) {
-			return errors.Errorf("Request size offset %d is bigger than maximum offset %d", //数据太大，溢出了
+		size := estimateRequestSize(req)                   //得到单个的req大小
+		estimatedVlogOffset := vlogOffset + size           //累加
+		if estimatedVlogOffset > uint64(maxVlogFileSize) { //如果累加值大于2的32次方-1
+			return errors.Errorf("Request size offset %d is bigger than maximum offset %d", //数据太大，溢出了，已经一个vlog放不下了
 				estimatedVlogOffset, maxVlogFileSize)
 		}
 
-		if estimatedVlogOffset >= uint64(vlog.opt.ValueLogFileSize) {
+		if estimatedVlogOffset >= uint64(vlog.opt.ValueLogFileSize) { //如果累加值大于2的30次方-1，注意这里还未到4G，也就是说是提前进行了分割，避免上面的报错
 			// We'll create a new vlog file if the estimated offset is greater or equal to
 			// max vlog size. So, resetting the vlogOffset.
 			// 如果估计的偏移量大于或等于最大vlog大小，我们将创建一个新的vlog文件（即切割）。因此，重置vlogOffset。
@@ -800,7 +800,7 @@ func estimateRequestSize(req *request) uint64 {
 }
 
 // write is thread-unsafe by design and should not be called concurrently.
-func (vlog *valueLog) write(reqs []*request) error { //这里面进行落盘
+func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入磁盘的vlog中（记住是通过mmap方式写入的）
 	if vlog.db.opt.InMemory {
 		return nil
 	}
@@ -811,7 +811,7 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面进行落盘
 	}
 
 	vlog.filesLock.RLock()
-	maxFid := vlog.maxFid // 就是Vlog文件的那个前缀数字（取最大的）
+	maxFid := vlog.maxFid // 就是Vlog文件的那个前缀数字（取最大的），最大的也是当前活跃的vlog
 	curlf := vlog.filesMap[maxFid]
 	vlog.filesLock.RUnlock()
 
@@ -862,49 +862,54 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面进行落盘
 	}
 
 	buf := new(bytes.Buffer)
-	for i := range reqs {
+	for i := range reqs { //开始真正遍历reqs
 		b := reqs[i]
-		b.Ptrs = b.Ptrs[:0]
+		b.Ptrs = b.Ptrs[:0] // 这个数组用来记录处理后的kv对，包含kv分离的以及不分离的，不分离的valuePointer对象为空
 		var written, bytesWritten int
 		valueSizes := make([]int64, 0, len(b.Entries))
+		// 遍历当前请求的kv对数组，挨个执行写入且进行统计
 		for j := range b.Entries {
 			buf.Reset()
 
 			e := b.Entries[j]
-			valueSizes = append(valueSizes, int64(len(e.Value)))
-			if e.skipVlogAndSetThreshold(vlog.db.valueThreshold()) {
-				b.Ptrs = append(b.Ptrs, valuePointer{})
+			valueSizes = append(valueSizes, int64(len(e.Value)))     //得到当前单个kv对的v大小
+			if e.skipVlogAndSetThreshold(vlog.db.valueThreshold()) { // 是否跳过vlog，为true就是kv全放LSM树
+				// valueThreshold就是分大小kv的那个阈值，注意，每个kv对象Entry内都会存一个，所以就算之后改变这个阈值，老系统也能正常运转
+				b.Ptrs = append(b.Ptrs, valuePointer{}) // 现在加在这里面的应该就是不用kv分离的
 				continue
 			}
 			var p valuePointer
 
 			p.Fid = curlf.fid
-			p.Offset = vlog.woffset()
+			p.Offset = vlog.woffset() // 得到当前活跃vlog文件的偏移量
 
 			// We should not store transaction marks in the vlog file because it will never have all
 			// the entries in a transaction. If we store entries with transaction marks then value
 			// GC will not be able to iterate on the entire vlog file.
 			// But, we still want the entry to stay intact for the memTable WAL. So, store the meta
 			// in a temporary variable and reassign it after writing to the value log.
-			tmpMeta := e.meta
+			// 我们不应该在vlog文件中存储事务标记，因为它永远不会包含事务中的所有条目。如果我们用事务标记存储条目，那么value GC将无法迭代整个vlog文件。
+			// 但是，我们仍然希望memTable WAL的条目保持不变。因此，将meta存储在临时变量中，并在写入值日志后重新分配。
+			tmpMeta := e.meta //这几行是处理元数据信息的
 			e.meta = e.meta &^ (bitTxn | bitFinTxn)
-			plen, err := curlf.encodeEntry(buf, e, p.Offset) // Now encode the entry into buffer.
+			plen, err := curlf.encodeEntry(buf, e, p.Offset) // Now encode the entry into buffer.将每个条目写入缓冲区，并返回长度该条目的长度
 			if err != nil {
 				return err
 			}
 			// Restore the meta.
 			e.meta = tmpMeta
 
-			p.Len = uint32(plen)
-			b.Ptrs = append(b.Ptrs, p)
-			if err := write(buf); err != nil {
+			p.Len = uint32(plen)               //记录当前kv对的长度
+			b.Ptrs = append(b.Ptrs, p)         //将当前放入vlog的kv对的信息记录起来
+			if err := write(buf); err != nil { // 真正开始将当前kv对转换的字节流执行写入 zzlTODO:看这个函数
 				return err
 			}
-			written++
-			bytesWritten += buf.Len()
+			written++                 //已写入的个数累计
+			bytesWritten += buf.Len() //已写入的字节流长度
 			// No need to flush anything, we write to file directly via mmap.
+			// 无需刷新任何内容，我们直接通过mmap写入文件。
 		}
-		y.NumWritesVlogAdd(vlog.opt.MetricsEnabled, int64(written))
+		y.NumWritesVlogAdd(vlog.opt.MetricsEnabled, int64(written)) //这行还有下一行就是一个计数写入vlog的统计量
 		y.NumBytesWrittenVlogAdd(vlog.opt.MetricsEnabled, int64(bytesWritten))
 
 		vlog.numEntriesWritten += uint32(written)
