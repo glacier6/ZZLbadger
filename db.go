@@ -787,6 +787,8 @@ func (db *DB) getMemTables() ([]*memTable, func()) {
 // 这样做。对于每个get（“fooX”）调用，其中X是版本，我们将搜索
 // 对于LSM树的所有级别中的“fooX”。这很贵，但
 // 完全消除了处理移动键的开销。
+
+// 注意函数参数中的key后缀有当前事务的readTs
 func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	if db.IsClosed() {
 		return y.ValueStruct{}, ErrDBClosed
@@ -807,14 +809,14 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 		}
 		// Found the required version of the key, return immediately.
 		if vs.Version == version { // 如果查出来的key的版本号与当前要找的版本号（默认正常流程的话应该是当前事务的readTs）相等，则代表是当前事务写入的数据，可以直接返回
-			y.NumGetsWithResultsAdd(db.opt.MetricsEnabled, 1)
+			y.NumGetsWithResultsAdd(db.opt.MetricsEnabled, 1) //统计数据的函数
 			return vs, nil
 		}
-		if maxVs.Version < vs.Version { // 找到查出来的最大版本号的key（应该是也要小于要找的版本号）
+		if maxVs.Version < vs.Version { // 找到查出来的最大版本号的key（应该也要小于要找的版本号）
 			maxVs = vs
 		}
 	}
-	return db.lc.get(key, maxVs, 0) //这里就去磁盘level中找了zzlTODO:看到这里了
+	return db.lc.get(key, maxVs, 0) //这里就去level中找了
 }
 
 var requestPool = sync.Pool{

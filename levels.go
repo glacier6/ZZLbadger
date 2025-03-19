@@ -1614,6 +1614,9 @@ func (s *levelsController) close() error {
 // get searches for a given key in all the levels of the LSM tree. It returns
 // key version <= the expected version (version in key). If not found,
 // it returns an empty y.ValueStruct.
+// get函数在LSM树的所有级别中搜索给定的键。它返回key版本<=预期版本（key中的版本，即当前事务的readTs）。如果未找到，则返回一个空的y.ValueStruct。
+// 注意startLevel标记从哪一层开始找
+// 注意函数参数中的key后缀有当前事务的readTs
 func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) (
 	y.ValueStruct, error) {
 	if s.kv.IsClosed() {
@@ -1624,12 +1627,15 @@ func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) 
 	// read level L's tables post-compaction and level L+1's tables pre-compaction. (If we do
 	// parallelize this, we will need to call the h.RLock() function by increasing order of level
 	// number.)
-	version := y.ParseTs(key)
+	// 重要的是，我们从0开始向上迭代级别。原因是，如果我们以相反的顺序或并行方式迭代（天真地以某种顺序调用所有h.RLock（）），
+	// 我们可以在压缩后读取L级的表，在压缩前读取L+1级的表。（如果我们将其并行化，我们需要通过增加级别号的顺序来调用h.RLock（）函数。）
+	version := y.ParseTs(key)    //解析出版本号（当前事务的ReadTs）
 	for _, h := range s.levels { //遍历7（默认）层
 		// Ignore all levels below startLevel. This is useful for GC when L0 is kept in memory.
 		if h.level < startLevel {
 			continue
 		}
+		//下面这一行是核心代码，去当前遍历层找目标key
 		vs, err := h.get(key) // Calls h.RLock() and h.RUnlock().
 		if err != nil {
 			return y.ValueStruct{}, y.Wrapf(err, "get key: %q", key)
@@ -1637,8 +1643,8 @@ func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) 
 		if vs.Value == nil && vs.Meta == 0 {
 			continue
 		}
-		y.NumBytesReadsLSMAdd(s.kv.opt.MetricsEnabled, int64(len(vs.Value)))
-		if vs.Version == version {
+		y.NumBytesReadsLSMAdd(s.kv.opt.MetricsEnabled, int64(len(vs.Value))) //统计信息
+		if vs.Version == version {                                           //如果找到的版本与当前事务的版本（readTs）相同，直接返回结果
 			return vs, nil
 		}
 		if maxVs.Version < vs.Version {
@@ -1646,7 +1652,7 @@ func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) 
 		}
 	}
 	if len(maxVs.Value) > 0 {
-		y.NumGetsWithResultsAdd(s.kv.opt.MetricsEnabled, 1)
+		y.NumGetsWithResultsAdd(s.kv.opt.MetricsEnabled, 1) //统计信息
 	}
 	return maxVs, nil
 }

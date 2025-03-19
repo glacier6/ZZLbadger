@@ -32,6 +32,9 @@ type levelHandler struct {
 	// For level >= 1, tables are sorted by key ranges, which do not overlap.
 	// For level 0, tables are sorted by time.
 	// For level 0, newest table are at the back. Compact the oldest one first, which is at the front.
+	//对于级别>=1，表按不重叠的键范围排序。
+	//对于级别0，表按时间排序。
+	//对于级别0，最新的表位于后面。先压缩最旧的那个，它在前面。
 	tables         []*table.Table
 	totalSize      int64
 	totalStaleSize int64
@@ -243,7 +246,7 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 	s.RLock() //上锁
 	defer s.RUnlock()
 
-	if s.level == 0 { //0层的特殊结构（可重叠），特殊处理
+	if s.level == 0 { //0层的特殊结构（可重叠），特殊处理，将0层所有的SST句柄返回
 		// For level 0, we need to check every table. Remember to make a copy as s.tables may change
 		// once we exit this function, and we don't want to lock s.tables while seeking in tables.
 		// CAUTION: Reverse the tables.
@@ -251,9 +254,9 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 		//一旦我们退出此函数，并且我们不想在表中查找时锁定s.tables。
 		//小心：倒序遍历表。
 		out := make([]*table.Table, 0, len(s.tables))
-		for i := len(s.tables) - 1; i >= 0; i-- { // 倒序遍历表（从新的开始遍历）
+		for i := len(s.tables) - 1; i >= 0; i-- { // 倒序遍历当前层的SST句柄表（从新的开始遍历）
 			out = append(out, s.tables[i])
-			s.tables[i].IncrRef()
+			s.tables[i].IncrRef() //这个是计数的，与是否应该删除文件有关
 		}
 		return out, func() error {
 			for _, t := range out {
@@ -265,6 +268,7 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 		}
 	}
 	// For level >= 1, we can do a binary search as key range does not overlap.
+	// 对于级别>=1，我们可以进行二分查找，因为关键字范围不重叠。
 	idx := sort.Search(len(s.tables), func(i int) bool { //利用SST的键值范围做一个二分查找，返回的idx是范围匹配到的SST在SST表中下标位置
 		return y.CompareKeys(s.tables[i].Biggest(), key) >= 0
 	})
@@ -280,27 +284,27 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 // get returns value for a given key or the key after that. If not found, return nil.
 // get返回给定键或之后键的值。如果没有找到，返回nil。
 func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
-	tables, decr := s.getTableForKey(key) //获取当前层的可能包含目标key的SST列表
+	tables, decr := s.getTableForKey(key) //获取当前层的可能包含目标key的SST句柄，0层把所有SST返回，其余层用二分查找找到目标那一个返回就可以
 	keyNoTs := y.ParseKey(key)            //获取没有时间戳的KEY
 
 	hash := y.Hash(keyNoTs) // 把key映射到了一个hash函数中
 	var maxVs y.ValueStruct
-	for _, th := range tables {
+	for _, th := range tables { //一个th代表一个SST
 		if th.DoesNotHave(hash) { //判断布隆过滤器是否命中（每个SST写入时都会在元数据区包含一个布隆过滤器的数值）
-			y.NumLSMBloomHitsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1)
+			y.NumLSMBloomHitsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1) //布隆过滤器未命中计数
 			continue
 		}
 		// 下面是查询	SST，即上面判断出阳性了
-		it := th.NewIterator(0)
+		it := th.NewIterator(0) //创建一个迭代器
 		defer it.Close()
 
-		y.NumLSMGetsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1)
-		it.Seek(key)     //正式查询，查找到的会放到it内
-		if !it.Valid() { //判断查找到的是否有效
+		y.NumLSMGetsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1) //统计信息
+		it.Seek(key)                                            //核心代码，正式查询，查找到的会放到it迭代器内
+		if !it.Valid() {                                        //判断查找到的是否有效
 			continue
 		}
-		if y.SameKey(key, it.Key()) {
-			if version := y.ParseTs(it.Key()); maxVs.Version < version {
+		if y.SameKey(key, it.Key()) { //判断key是否相等
+			if version := y.ParseTs(it.Key()); maxVs.Version < version { //如果找到的版本比之前找到的最大版本还要大，那么就把现在找到的这个kv当作最新版
 				maxVs = it.ValueCopy()  //拼接值
 				maxVs.Version = version //拼接版本
 			}

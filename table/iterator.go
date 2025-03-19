@@ -61,6 +61,7 @@ func (itr *blockIterator) setBlock(b *Block) {
 }
 
 // setIdx sets the iterator to the entry at index i and set it's key and value.
+// setIdx将迭代器设置为索引i处的条目，并设置其键和值
 func (itr *blockIterator) setIdx(i int) {
 	itr.idx = i
 	if i >= len(itr.entryOffsets) || i < 0 {
@@ -132,11 +133,12 @@ var (
 )
 
 // seek brings us to the first block element that is >= input key.
+// seek函数将会给我们找到第一个大于等于目标key的元素
 func (itr *blockIterator) seek(key []byte, whence int) {
 	itr.err = nil
 	startIndex := 0 // This tells from which index we should start binary search.
 
-	switch whence {
+	switch whence { //判断从哪里开始查找
 	case origin:
 		// We don't need to do anything. startIndex is already at 0
 	case current:
@@ -148,8 +150,8 @@ func (itr *blockIterator) seek(key []byte, whence int) {
 		if idx < startIndex {
 			return false
 		}
-		itr.setIdx(idx)
-		return y.CompareKeys(itr.key, key) >= 0
+		itr.setIdx(idx)                         //设置当前遍历到的kv对（设置最终结果也是这个函数），方便之后的比较
+		return y.CompareKeys(itr.key, key) >= 0 //进行比较
 	})
 	itr.setIdx(foundEntryIdx)
 }
@@ -187,7 +189,7 @@ type Iterator struct {
 // NewIterator returns a new iterator of the Table
 // 表的迭代器
 func (t *Table) NewIterator(opt int) *Iterator {
-	t.IncrRef() // Important.
+	t.IncrRef() // Important. 计数
 	ti := &Iterator{t: t, opt: opt}
 	return ti
 }
@@ -250,17 +252,18 @@ func (itr *Iterator) seekToLast() {
 	itr.err = itr.bi.Error()
 }
 
+// 下面就是要根据目标块的idx来获取该目标块，并且在该目标块内找到的第一个大于等于目标key的元素放在这个itr迭代器对象内
 func (itr *Iterator) seekHelper(blockIdx int, key []byte) {
 	itr.bpos = blockIdx
-	block, err := itr.t.block(blockIdx, itr.useCache()) //拿到block块
+	block, err := itr.t.block(blockIdx, itr.useCache()) //核心代码，拿到目标block块（先看缓存，没有再去外存）
 	if err != nil {
 		itr.err = err
 		return
 	}
-	itr.bi.tableID = itr.t.id
+	itr.bi.tableID = itr.t.id //这几行是再itr这个迭代器对象中保存一些现在查询的关键信息
 	itr.bi.blockID = itr.bpos
-	itr.bi.setBlock(block)
-	itr.bi.seek(key, origin) //二分查找block内数据
+	itr.bi.setBlock(block)   // 给迭代器设置迭代的对象块
+	itr.bi.seek(key, origin) // 核心代码，正式开始二分查找block内数据，其会将找到的第一个大于等于目标key的元素放在这个itr迭代器对象内
 	itr.err = itr.bi.Error()
 }
 
@@ -274,14 +277,15 @@ func (itr *Iterator) seekFrom(key []byte, whence int) {
 	}
 
 	var ko fb.BlockOffset
-	//这个是个二分查找
-	idx := sort.Search(itr.t.offsetsLength(), func(idx int) bool { //遍历块（SST的更低一级的存储单元），idx返回目标key的SST的offset位置
+	//下面是个二分查找，注意一个itr迭代器对应一个SST，所以现在是在SST内二分查找
+	idx := sort.Search(itr.t.offsetsLength(), func(idx int) bool { //遍历块（SST的更低一级的存储单元），idx返回目标key在SST的offset位置
 		// Offsets should never return false since we're iterating within the OffsetsLength.
 		y.AssertTrue(itr.t.offsets(&ko, idx))
-		return y.CompareKeys(ko.KeyBytes(), key) > 0
+		return y.CompareKeys(ko.KeyBytes(), key) > 0 //这个就是比较key
 	})
 	if idx == 0 { //没有找到
 		// The smallest key in our table is already strictly > key. We can return that.
+		// 我们表中最小的键已经是>key。我们可以return了。
 		// This is like a SeekToFirst.
 		itr.seekHelper(0, key)
 		return
@@ -293,18 +297,27 @@ func (itr *Iterator) seekFrom(key []byte, whence int) {
 	// 1) Everything in block[idx-1] is strictly < key. In this case, we should go to the first
 	//    element of block[idx].
 	// 2) Some element in block[idx-1] is >= key. We should go to that element.
-	itr.seekHelper(idx-1, key)
+	// 当前block[idx]的最小键已经是大于目标key了
+	// 则block[idx-1]的最小键将会是<=目标key的
+	// 有两个情况。
+	//  1）block[idx-1]中的所有内容都严格<目标key。在这种情况下，我们应该取block[idx]的第一个元素
+	//  2）block[idx-1]中的某个元素>=key。我们应该去那个元素。
+	itr.seekHelper(idx-1, key) // 核心代码，去idx-1下标的块内找目标key
 	if itr.err == io.EOF {
 		// Case 1. Need to visit block[idx].
+		// 情况1，需要去block[idx]这个块内找
 		if idx == itr.t.offsetsLength() {
 			// If idx == len(itr.t.blockIndex), then input key is greater than ANY element of table.
 			// There's nothing we can do. Valid() should return false as we seek to end of table.
+			// 如果idx==len（itr.t.blockIndex），则输入键大于表的任何元素。我们无能为力。当我们试图到达表的末尾时，Valid（）应该返回false。
 			return
 		}
 		// Since block[idx].smallest is > key. This is essentially a block[idx].SeekToFirst.
-		itr.seekHelper(idx, key)
+		// 因为block[idx]最小key >key
+		itr.seekHelper(idx, key) // 核心代码，去idx下标的块内找目标key
 	}
 	// Case 2: No need to do anything. We already did the seek in block[idx-1].
+	// 情况2：无需采取任何行动。我们已经在块[idx-1]中进行了搜索。
 }
 
 // seek will reset iterator and seek to >= key.
@@ -421,8 +434,9 @@ func (itr *Iterator) Rewind() {
 }
 
 // Seek follows the y.Iterator interface
+// Seek遵循y.Iterator接口
 func (itr *Iterator) Seek(key []byte) {
-	if itr.opt&REVERSED == 0 {
+	if itr.opt&REVERSED == 0 { //判断迭代方向
 		itr.seek(key)
 	} else {
 		itr.seekForPrev(key)

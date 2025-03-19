@@ -125,6 +125,7 @@ func KeyWithTs(key []byte, ts uint64) []byte { // key后拼接时间戳
 }
 
 // ParseTs parses the timestamp from the key bytes.
+// ParseTs从关键字节中解析时间戳。
 func ParseTs(key []byte) uint64 {
 	if len(key) <= 8 {
 		return 0
@@ -153,6 +154,7 @@ func ParseKey(key []byte) []byte {
 }
 
 // SameKey checks for key equality ignoring the version timestamp suffix.
+// SameKey检查key是否相等，忽略版本时间戳后缀。
 func SameKey(src, dst []byte) bool {
 	if len(src) != len(dst) {
 		return false

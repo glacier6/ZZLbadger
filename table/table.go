@@ -155,11 +155,13 @@ func (t *Table) CompressionType() options.CompressionType {
 }
 
 // IncrRef increments the refcount (having to do with whether the file should be deleted)
+// IncrEf递增引用计数（与是否应删除文件有关）
 func (t *Table) IncrRef() {
 	t.ref.Add(1)
 }
 
 // DecrRef decrements the refcount and possibly deletes the table
+// DecrEf递减引用计数，并可能删除表
 func (t *Table) DecrRef() error {
 	newRef := t.ref.Add(-1)
 	if newRef == 0 {
@@ -536,14 +538,15 @@ func (t *Table) offsets(ko *fb.BlockOffset, i int) bool {
 // block function return a new block. Each block holds a ref and the byte
 // slice stored in the block will be reused when the ref becomes zero. The
 // caller should release the block by calling block.decrRef() on it.
+// block函数返回一个块。每个块都包含一个ref，当ref变为零时，存储在块中的字节切片将被重用。调用者应该通过调用block.dectRef（）来释放该块。
 func (t *Table) block(idx int, useCache bool) (*Block, error) {
 	y.AssertTruef(idx >= 0, "idx=%d", idx)
 	if idx >= t.offsetsLength() {
 		return nil, errors.New("block out of index")
 	}
 	if t.opt.BlockCache != nil { //如果允许块缓存，那么就先去内存找对应块
-		key := t.blockCacheKey(idx)
-		blk, ok := t.opt.BlockCache.Get(key)
+		key := t.blockCacheKey(idx)          //依照前面找到的idx生成在块缓存内该块对应的key值（是块的key）
+		blk, ok := t.opt.BlockCache.Get(key) //依照块的key去缓存中找这个块
 		if ok && blk != nil {
 			// Use the block only if the increment was successful. The block
 			// could get evicted from the cache between the Get() call and the
@@ -553,16 +556,16 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 			}
 		}
 	}
-
+	//没在块缓存中找到，下面是去mmap（磁盘）中获取
 	var ko fb.BlockOffset
-	y.AssertTrue(t.offsets(&ko, idx))
-	blk := &Block{offset: int(ko.Offset())}
-	blk.ref.Store(1)
-	defer blk.decrRef() // Deal with any errors, where blk would not be returned.
+	y.AssertTrue(t.offsets(&ko, idx))       //这一步和下一步应该是要在这个新的块结构体内设置上该块在目标SST的一些信息然后存储在ko结构体中
+	blk := &Block{offset: int(ko.Offset())} //先在内存生成一个块结构体
+	blk.ref.Store(1)                        //设置块的引用为1
+	defer blk.decrRef()                     // Deal with any errors, where blk would not be returned.
 	NumBlocks.Add(1)
 
 	var err error
-	if blk.data, err = t.read(blk.offset, int(ko.Len())); err != nil { //从磁盘读出来block块
+	if blk.data, err = t.read(blk.offset, int(ko.Len())); err != nil { //从磁盘的目标table中读出来block块
 		return nil, y.Wrapf(err,
 			"failed to read from file: %s at offset: %d, len: %d",
 			t.Fd.Name(), blk.offset, ko.Len())
@@ -570,6 +573,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 
 	if t.shouldDecrypt() {
 		// Decrypt the block if it is encrypted.
+		// 如果块已加密，则对其进行解密。
 		if blk.data, err = t.decrypt(blk.data, true); err != nil {
 			return nil, err
 		}
@@ -577,27 +581,32 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 		blk.freeMe = true
 	}
 
-	if err = t.decompress(blk); err != nil {
+	if err = t.decompress(blk); err != nil { //对块进行解压缩
 		return nil, y.Wrapf(err,
 			"failed to decode compressed data in file: %s at offset: %d, len: %d",
 			t.Fd.Name(), blk.offset, ko.Len())
 	}
 
 	// Read meta data related to block.
+	// 读取与块相关的元数据。
 	readPos := len(blk.data) - 4 // First read checksum length.
 	blk.chkLen = int(y.BytesToU32(blk.data[readPos : readPos+4]))
 
 	// Checksum length greater than block size could happen if the table was compressed and
 	// it was opened with an incorrect compression algorithm (or the data was corrupted).
+	// 如果表被压缩并且使用不正确的压缩算法打开（或数据已损坏），则校验和长度可能会大于块大小。
 	if blk.chkLen > len(blk.data) {
 		return nil, errors.New("invalid checksum length. Either the data is " +
 			"corrupted or the table options are incorrectly set")
 	}
 
+	//下面这些都是解析块的元数据信息
 	// Read checksum and store it
+	// 读取校验和并存储
 	readPos -= blk.chkLen
 	blk.checksum = blk.data[readPos : readPos+blk.chkLen]
 	// Move back and read numEntries in the block.
+	//向后移动并读取块中的numEntries。
 	readPos -= 4
 	numEntries := int(y.BytesToU32(blk.data[readPos : readPos+4]))
 	entriesIndexStart := readPos - (numEntries * 4)
@@ -609,9 +618,12 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 
 	// Drop checksum and checksum length.
 	// The checksum is calculated for actual data + entry index + index length
+	// 删除校验和和长度。
+	// 校验和是针对实际数据+条目索引+索引长度计算的
 	blk.data = blk.data[:readPos+4]
 
 	// Verify checksum on if checksum verification mode is OnRead on OnStartAndRead.
+	// 如果OnStartAndRead上的校验和验证模式为OnRead，请在上验证校验和。
 	if t.opt.ChkMode == options.OnBlockRead || t.opt.ChkMode == options.OnTableAndBlockRead {
 		if err = blk.verifyCheckSum(); err != nil {
 			return nil, err
@@ -626,8 +638,9 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 		y.AssertTrue(blk.incrRef())
 
 		// Decrement the block ref if we could not insert it in the cache.
-		if !t.opt.BlockCache.Set(key, blk, blk.size()) {
-			blk.decrRef() //将读取到的块设置到块缓存中
+		// 如果我们无法将块ref插入缓存中，请将其递减。
+		if !t.opt.BlockCache.Set(key, blk, blk.size()) { //核心代码，将读取到的块设置到块缓存中
+			blk.decrRef()
 		}
 		// We have added an OnReject func in our cache, which gets called in case the block is not
 		// admitted to the cache. So, every block would be accounted for.
@@ -636,6 +649,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 }
 
 // blockCacheKey is used to store blocks in the block cache.
+// blockCacheKey用于在块缓存中存储块。
 func (t *Table) blockCacheKey(idx int) []byte {
 	y.AssertTrue(t.id < math.MaxUint32)
 	y.AssertTrue(uint32(idx) < math.MaxUint32)
@@ -678,6 +692,8 @@ func (t *Table) ID() uint64 { return t.id }
 
 // DoesNotHave returns true if and only if the table does not have the key hash.
 // It does a bloom filter lookup.
+// DoesNotHave返回true，当且仅当表没有键哈希时。
+// 它执行布隆过滤器查找。
 func (t *Table) DoesNotHave(hash uint32) bool {
 	if !t.hasBloomFilter {
 		return false
