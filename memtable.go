@@ -192,11 +192,12 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 	}
 
 	// wal is nil only when badger in running in in-memory mode and we don't need the wal.
+	// 只有当badgerDB处于内存运行模式时，wal才为零，我们不需要wal
 	if mt.wal != nil {
 		// If WAL exceeds opt.ValueLogFileSize, we'll force flush the memTable. See logic in
 		// ensureRoomForWrite.
-		// 如果WAL超过opt。ValueLogFileSize，我们将强制刷新memTable。
-		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil { //写入预写日志
+		// 如果WAL超过opt.ValueLogFileSize，我们将强制刷新memTable。
+		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil { //写入预写日志（核心操作）
 			return y.Wrapf(err, "cannot write entry to WAL file")
 		}
 	}
@@ -206,8 +207,8 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 	}
 
 	// Write to skiplist and update maxVersion encountered.
-	mt.sl.Put(key, value) //这里的LS就是跳表了！！把KV压入跳表
-	if ts := y.ParseTs(entry.Key); ts > mt.maxVersion {
+	mt.sl.Put(key, value)                               //这里的SL就是跳表了！！把KV压入跳表（核心操作）
+	if ts := y.ParseTs(entry.Key); ts > mt.maxVersion { //更新memtable内存储key的最大版本号
 		mt.maxVersion = ts
 	}
 	y.NumBytesWrittenToL0Add(mt.opt.MetricsEnabled, entry.estimateSizeAndSetThreshold(mt.opt.ValueThreshold))
@@ -262,6 +263,7 @@ func (mt *memTable) replayFunction(opt Options) func(Entry, valuePointer) error 
 	}
 }
 
+// vlog文件以及wal日志均是这个类型的文件
 type logFile struct {
 	*z.MmapFile
 	path string
@@ -282,6 +284,7 @@ type logFile struct {
 	opt      Options
 }
 
+// Truncate截断
 func (lf *logFile) Truncate(end int64) error {
 	if fi, err := lf.Fd.Stat(); err != nil {
 		return fmt.Errorf("while file.stat on file: %s, error: %v\n", lf.Fd.Name(), err)
@@ -424,8 +427,8 @@ func (lf *logFile) generateIV(offset uint32) []byte {
 }
 
 func (lf *logFile) doneWriting(offset uint32) error {
-	if lf.opt.SyncWrites {
-		if err := lf.Sync(); err != nil {
+	if lf.opt.SyncWrites { // 如果配置了同步写
+		if err := lf.Sync(); err != nil { // 就进行同步落盘
 			return y.Wrapf(err, "Unable to sync value log: %q", lf.path)
 		}
 	}
@@ -434,10 +437,12 @@ func (lf *logFile) doneWriting(offset uint32) error {
 	// descriptor due to reopening it as read-only. Now, we don't invalidate the fd, but unmap it,
 	// truncate it and remap it. That creates a window where we have segfaults because the mmap is
 	// no longer valid, while someone might be reading it. Therefore, we need a lock here again.
+	// 在我们获取lf.lock上的锁之前，因为我们以只读方式重新打开文件描述符，导致文件描述符无效。现在，我们不会使fd无效，而是取消映射、截断并重新映射它。
+	// 这会创建一个窗口，在那里我们有segfaults，因为mmap不再有效，而有人可能正在读取它。因此，我们再次需要一个锁。
 	lf.lock.Lock()
 	defer lf.lock.Unlock()
 
-	if err := lf.Truncate(int64(offset)); err != nil {
+	if err := lf.Truncate(int64(offset)); err != nil { // 截断Mmap文件
 		return y.Wrapf(err, "Unable to truncate file: %q", lf.path)
 	}
 
@@ -552,6 +557,7 @@ loop:
 }
 
 // Zero out the next entry to deal with any crashes.
+// 清空下一个条目以处理任何崩溃。
 func (lf *logFile) zeroNextEntry() {
 	z.ZeroOut(lf.Data, int(lf.writeAt), int(lf.writeAt+maxHeaderSize))
 }

@@ -867,5 +867,5 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 		return err
 	}
 
-	return txn.Commit()
+	return txn.Commit() //进行提交（注意是在提交的时候才会进行写入操作）
 }

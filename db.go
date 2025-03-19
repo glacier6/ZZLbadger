@@ -825,13 +825,16 @@ func (db *DB) writeToLSM(b *request) error {
 	// We should check the length of b.Prts and b.Entries only when badger is not
 	// running in InMemory mode. In InMemory mode, we don't write anything to the
 	// value log and that's why the length of b.Ptrs will always be zero.
+	// 我们应该只在badgerDB未在InMemory模式下运行时检查b.Prts和b.Entries的长度。
+	// 在InMemory模式下，我们不会向值日志写入任何内容，这就是为什么b.Ptrs的长度始终为零的原因。
 	if !db.opt.InMemory && len(b.Ptrs) != len(b.Entries) {
 		return errors.Errorf("Ptrs and Entries don't match: %+v", b)
 	}
 
-	for i, entry := range b.Entries {
+	for i, entry := range b.Entries { //遍历当前请求的kv数组
 		var err error
-		if entry.skipVlogAndSetThreshold(db.valueThreshold()) { // db.valueThreshold()获取的是分大小KV的界限，貌似默认是1024字节，如果本if为true，那么就是小value，把值直接放进去
+		if entry.skipVlogAndSetThreshold(db.valueThreshold()) { // db.valueThreshold()获取的是分大小KV的界限，貌似默认是1024字节
+			// 当前kv是小value，把值放进memtable
 			// Will include deletion / tombstone case.
 			err = db.mt.Put(entry.Key,
 				y.ValueStruct{
@@ -844,7 +847,7 @@ func (db *DB) writeToLSM(b *request) error {
 					UserMeta:  entry.UserMeta,
 					ExpiresAt: entry.ExpiresAt,
 				})
-		} else { // 是大KV
+		} else { // 当前kv是大KV，在LSM树的value处拼装上前面在处理vlog的时候得到的offset并放进memtable
 			// Write pointer to Memtable.
 			err = db.mt.Put(entry.Key,
 				y.ValueStruct{
@@ -858,7 +861,7 @@ func (db *DB) writeToLSM(b *request) error {
 			return y.Wrapf(err, "while writing to memTable")
 		}
 	}
-	if db.opt.SyncWrites {
+	if db.opt.SyncWrites { // 如果同步写
 		return db.mt.SyncWAL()
 	}
 	return nil
@@ -877,7 +880,7 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 		}
 	}
 	db.opt.Debugf("writeRequests called. Writing to value log")
-	err := db.vlog.write(reqs) // 写入VLOG
+	err := db.vlog.write(reqs) // 写入VLOG（核心代码块）
 	if err != nil {
 		done(err)
 		return err
@@ -885,13 +888,14 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 
 	db.opt.Debugf("Writing to memtable")
 	var count int
-	for _, b := range reqs { // 写入LSM中
-		if len(b.Entries) == 0 {
+	for _, b := range reqs { // 写入LSM中（核心代码块）
+		if len(b.Entries) == 0 { // 当前req内没有kv对要写入就跳过
 			continue
 		}
-		count += len(b.Entries)
+		count += len(b.Entries) //累加待写入的kv对数量
 		var i uint64
 		var err error
+		// 下面这个ensureRoomForWrite函数实际上就是做的判断memtable是否满足转换为immemtable的条件，并做一些操作（核心代码块）
 		for err = db.ensureRoomForWrite(); err == errNoRoom; err = db.ensureRoomForWrite() {
 			i++
 			if i%100 == 0 {
@@ -900,13 +904,16 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 			// We need to poll a bit because both hasRoomForWrite and the flusher need access to s.imm.
 			// When flushChan is full and you are blocked there, and the flusher is trying to update s.imm,
 			// you will get a deadlock.
+			// 我们需要进行一些轮询，因为RoomForWrite和刷新器都需要访问.imm。
+			// 当flushChan已满，您在那里被阻止，并且flusher正在尝试更新s.imm时，
+			// 你会陷入死锁。
 			time.Sleep(10 * time.Millisecond)
 		}
 		if err != nil {
 			done(err)
 			return y.Wrap(err, "writeRequests")
 		}
-		if err := db.writeToLSM(b); err != nil {
+		if err := db.writeToLSM(b); err != nil { //写入LSM树的核心函数，传入的是单个req
 			done(err)
 			return y.Wrap(err, "writeRequests")
 		}
@@ -964,7 +971,7 @@ func (db *DB) doWrites(lc *z.Closer) {
 	reqLen := new(expvar.Int) // 获取写请求的长度
 	y.PendingWritesSet(db.opt.MetricsEnabled, db.opt.Dir, reqLen)
 
-	reqs := make([]*request, 0, 10) // 最多攒了10次再去写
+	reqs := make([]*request, 0, 10) // 最多攒了10次req再去写（貌似是未必必须满才去写）
 	for {
 		var r *request
 		select { //GO的select专用于通道处理的，每个case对应一个通道操作，若某个能执行，则就执行哪一个，多个能执行的，随机选一个执行！即只执行一个
@@ -996,15 +1003,15 @@ func (db *DB) doWrites(lc *z.Closer) {
 	closedCase: //这个貌似是在系统关闭的时候才会用到？
 		// All the pending request are drained.
 		// Don't close the writeCh, because it has be used in several places.
-		//所有待处理的请求都被清空。
-		//不要关闭writeCh，因为它已在多个地方使用过。
+		// 所有待处理的请求都被清空。
+		// 不要关闭writeCh，因为它已在多个地方使用过。
 		for {
 			select {
 			case r = <-db.writeCh:
 				reqs = append(reqs, r)
 			default:
 				pendingCh <- struct{}{} // Push to pending before doing a write.处理写请求，就把这个容量为1的chan填满封死，处理完这个后再释放
-				writeRequests(reqs)     // 处理写请求
+				writeRequests(reqs)     // 最后处理下写请求
 				return
 			}
 		}
@@ -1052,23 +1059,25 @@ func (db *DB) batchSetAsync(entries []*Entry, f func(error)) error {
 var errNoRoom = stderrors.New("No room for write")
 
 // ensureRoomForWrite is always called serially.
+// 确保始终以串行方式调用RoomForWrite。
+// 下面这个函数实际上就是做的判断memtable是否满足转换为immemtable的条件，并做一些操作
 func (db *DB) ensureRoomForWrite() error {
 	var err error
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
 	y.AssertTrue(db.mt != nil) // A nil mt indicates that DB is being closed.
-	if !db.mt.isFull() {
+	if !db.mt.isFull() {       //如果memtable非空就返回
 		return nil
 	}
 
 	select {
-	case db.flushChan <- db.mt:
+	case db.flushChan <- db.mt: // 将当前的memtable写入到flushChan通道中（这个通道内的都是待刷入磁盘的immemtable）
 		db.opt.Debugf("Flushing memtable, mt.size=%d size of flushChan: %d\n",
 			db.mt.sl.MemSize(), len(db.flushChan))
 		// We manage to push this task. Let's modify imm.
-		db.imm = append(db.imm, db.mt)
-		db.mt, err = db.newMemTable()
+		db.imm = append(db.imm, db.mt) // 将当前的满的memtable转换为immemtable放到immemtable数组中
+		db.mt, err = db.newMemTable()  // 创建一个新的memtable，来接受新的写入请求
 		if err != nil {
 			return y.Wrapf(err, "cannot create new mem table")
 		}
@@ -1076,6 +1085,7 @@ func (db *DB) ensureRoomForWrite() error {
 		return nil
 	default:
 		// We need to do this to unlock and allow the flusher to modify imm.
+		// 我们需要这样做来解锁并允许刷新器修改imm。
 		return errNoRoom
 	}
 }

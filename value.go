@@ -811,8 +811,8 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 	}
 
 	vlog.filesLock.RLock()
-	maxFid := vlog.maxFid // 就是Vlog文件的那个前缀数字（取最大的），最大的也是当前活跃的vlog
-	curlf := vlog.filesMap[maxFid]
+	maxFid := vlog.maxFid          // 就是Vlog文件的那个前缀数字（取最大的），最大的也是活跃的vlog
+	curlf := vlog.filesMap[maxFid] // 表示当前活跃的vlog对象
 	vlog.filesLock.RUnlock()
 
 	defer func() {
@@ -823,36 +823,40 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 		}
 	}()
 
+	// 一次处理一个kv对（即一个entry）
 	write := func(buf *bytes.Buffer) error {
 		if buf.Len() == 0 {
 			return nil
 		}
 
 		n := uint32(buf.Len())
-		endOffset := vlog.writableLogOffset.Add(n)
+		endOffset := vlog.writableLogOffset.Add(n) // 偏移位置累加
 		// Increase the file size if we cannot accommodate this entry.
 		// [Aman] Should this be >= or just >? Doesn't make sense to extend the file if it big enough already.
-		if int(endOffset) >= len(curlf.Data) {
+		//如果我们无法容纳此条目，请增加文件大小。
+		//[Aman]这应该是>=还是只是>？如果文件已经足够大，扩展它是没有意义的。
+		if int(endOffset) >= len(curlf.Data) { // zzlTODO:回来需要再去看看下面这里是干啥的，需要去看Ristretto的使用文档，看函数啥意思（大致是对mmap进行的截断操作）
 			if err := curlf.Truncate(int64(endOffset)); err != nil {
 				return err
 			}
 		}
 
 		start := int(endOffset - n)
-		y.AssertTrue(copy(curlf.Data[start:], buf.Bytes()) == int(n))
+		y.AssertTrue(copy(curlf.Data[start:], buf.Bytes()) == int(n)) //核心，放入curlf对象内，后续因为是mmap方式再由操作系统放入磁盘即可
 
-		curlf.size.Store(endOffset)
+		curlf.size.Store(endOffset) //更新偏移位置
 		return nil
 	}
 
+	//具体落盘操作
 	toDisk := func() error {
-		if vlog.woffset() > uint32(vlog.opt.ValueLogFileSize) ||
+		if vlog.woffset() > uint32(vlog.opt.ValueLogFileSize) || //如果当前活跃的vlog的偏移量大于最大文件大小限制 或者 当前vlog的写入kv对数量大于最大写入个数限制
 			vlog.numEntriesWritten > vlog.opt.ValueLogMaxEntries {
-			if err := curlf.doneWriting(vlog.woffset()); err != nil {
+			if err := curlf.doneWriting(vlog.woffset()); err != nil { //标志当前vlog文件写满，在该函数内，如果设置了同步则会直接系统调用sync，最后根据offset截断mmap
 				return err
 			}
 
-			newlf, err := vlog.createVlogFile()
+			newlf, err := vlog.createVlogFile() //创建新的vlog文件
 			if err != nil {
 				return err
 			}
@@ -862,7 +866,8 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 	}
 
 	buf := new(bytes.Buffer)
-	for i := range reqs { //开始真正遍历reqs
+	//开始真正遍历reqs，每个req里面有一个Entries数组
+	for i := range reqs {
 		b := reqs[i]
 		b.Ptrs = b.Ptrs[:0] // 这个数组用来记录处理后的kv对，包含kv分离的以及不分离的，不分离的valuePointer对象为空
 		var written, bytesWritten int
@@ -892,7 +897,7 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 			// 但是，我们仍然希望memTable WAL的条目保持不变。因此，将meta存储在临时变量中，并在写入值日志后重新分配。
 			tmpMeta := e.meta //这几行是处理元数据信息的
 			e.meta = e.meta &^ (bitTxn | bitFinTxn)
-			plen, err := curlf.encodeEntry(buf, e, p.Offset) // Now encode the entry into buffer.将每个条目写入缓冲区，并返回长度该条目的长度
+			plen, err := curlf.encodeEntry(buf, e, p.Offset) // Now encode the entry into buffer.将每个条目写入缓冲区，并返回长度该条目的长度（e是单个kv对）
 			if err != nil {
 				return err
 			}
@@ -901,7 +906,7 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 
 			p.Len = uint32(plen)               //记录当前kv对的长度
 			b.Ptrs = append(b.Ptrs, p)         //将当前放入vlog的kv对的信息记录起来
-			if err := write(buf); err != nil { // 真正开始将当前kv对转换的字节流执行写入 zzlTODO:看这个函数
+			if err := write(buf); err != nil { // 真正开始将当前kv对转换的字节流执行写入
 				return err
 			}
 			written++                 //已写入的个数累计
