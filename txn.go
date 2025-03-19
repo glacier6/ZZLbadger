@@ -475,7 +475,8 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 	}
 
 	item = new(Item)
-	if txn.update { // 如果是读写事务
+	// 如果是读写事务
+	if txn.update {
 		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否在pendingWrites（就是判断是否是当前事务之前提交过的数据），如果在，下面就直接拼装返回
 			if isDeletedOrExpired(e.meta, e.ExpiresAt) { // 在，且没有过期就开始拼装返回
 				return nil, ErrKeyNotFound
@@ -498,7 +499,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 
 	//下面就是没在当前事务历史操作内直接找到，去LSM TREE取相应的key了
 	seek := y.KeyWithTs(key, txn.readTs) // key后拼接读取时间戳（亦指事务的开始时间戳）
-	vs, err := txn.db.get(seek)
+	vs, err := txn.db.get(seek)          // 核心操作，去找结果了
 	if err != nil {
 		return nil, y.Wrapf(err, "DB::Get key: %q", key)
 	}
@@ -810,7 +811,7 @@ func (db *DB) NewTransaction(update bool) *Txn {
 func (db *DB) newTransaction(update, isManaged bool) *Txn {
 	if db.opt.ReadOnly && update {
 		// DB is read-only, force read-only transaction.
-		// 若只读，则把更新关掉，badger读写是不一样的，只读的话会少做一些事情，比如不用考虑事物冲突
+		// 若只读，则把更新关掉，badger读写是不一样的，只读的话会少做一些事情，比如不用考虑事物冲突,也不用获取commitTS
 		update = false
 	}
 

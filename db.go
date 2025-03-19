@@ -730,6 +730,7 @@ func (db *DB) Sync() error {
 }
 
 // getMemtables returns the current memtables and get references.
+// getMemTables会返回memtable与immemtable的合集
 func (db *DB) getMemTables() ([]*memTable, func()) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
@@ -790,29 +791,30 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	if db.IsClosed() {
 		return y.ValueStruct{}, ErrDBClosed
 	}
-	tables, decr := db.getMemTables() // Lock should be released.
+	//先获取memtable
+	tables, decr := db.getMemTables() // Lock should be released. 注意getMemTables会返回memtable与immemtable的合集
 	defer decr()
 
 	var maxVs y.ValueStruct
-	version := y.ParseTs(key) // 从key中解析出版本号
+	version := y.ParseTs(key) // 从key中解析出前面加的readTs版本号
 
 	y.NumGetsAdd(db.opt.MetricsEnabled, 1)
 	for i := 0; i < len(tables); i++ { //从最新开始遍历table
-		vs := tables[i].sl.Get(key)
+		vs := tables[i].sl.Get(key) // 核心操作，去当前table的跳表中得到目标key
 		y.NumMemtableGetsAdd(db.opt.MetricsEnabled, 1)
 		if vs.Meta == 0 && vs.Value == nil {
 			continue
 		}
 		// Found the required version of the key, return immediately.
-		if vs.Version == version {
+		if vs.Version == version { // 如果查出来的key的版本号与当前要找的版本号（默认正常流程的话应该是当前事务的readTs）相等，则代表是当前事务写入的数据，可以直接返回
 			y.NumGetsWithResultsAdd(db.opt.MetricsEnabled, 1)
 			return vs, nil
 		}
-		if maxVs.Version < vs.Version {
+		if maxVs.Version < vs.Version { // 找到查出来的最大版本号的key（应该是也要小于要找的版本号）
 			maxVs = vs
 		}
 	}
-	return db.lc.get(key, maxVs, 0) //这里就去磁盘找了
+	return db.lc.get(key, maxVs, 0) //这里就去磁盘level中找了zzlTODO:看到这里了
 }
 
 var requestPool = sync.Pool{
