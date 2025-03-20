@@ -31,8 +31,8 @@ func main() {
 	// 遍历keys（范围查询）
 	err = db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
-		opts.PrefetchSize = 10      //指定预读取的尺寸大小
-		it := txn.NewIterator(opts) //这个顶级迭代器屏蔽了数据可能在内存，也可能在外存，也可能在事务中，统一进行遍历
+		opts.PrefetchSize = 10      //指定预读取的kv对个数
+		it := txn.NewIterator(opts) //核心代码，这个顶级迭代器屏蔽了数据可能在内存，也可能在外存，也可能在事务中，统一进行遍历
 		defer it.Close()
 		for it.Rewind(); it.Valid(); it.Next() { // Rewind把指针指在哪里，Valid判断当前kv是否有效，Next取下一个kv
 			item := it.Item()

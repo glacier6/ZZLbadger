@@ -455,6 +455,7 @@ type valueLog struct {
 	maxFid           uint32
 	filesToBeDeleted []uint32
 	// A refcount of iterators -- when this hits zero, we can delete the filesToBeDeleted.
+	// 迭代器的重新计数——当这个值为零时，我们可以删除ToBeDeleted文件。
 	numActiveIterators atomic.Int32
 
 	db                *DB

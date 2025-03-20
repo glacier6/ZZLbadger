@@ -343,11 +343,12 @@ func (txn *Txn) newPendingWritesIterator(reversed bool) *pendingWritesIterator {
 		return nil
 	}
 	entries := make([]*Entry, 0, len(txn.pendingWrites))
-	for _, e := range txn.pendingWrites {
+	for _, e := range txn.pendingWrites { //拿到所有当前事务待写入的KV对
 		entries = append(entries, e)
 	}
 	// Number of pending writes per transaction shouldn't be too big in general.
-	sort.Slice(entries, func(i, j int) bool {
+	// 一般来说，每个事务的待处理写入次数不应太大。
+	sort.Slice(entries, func(i, j int) bool { //排序
 		cmp := bytes.Compare(entries[i].Key, entries[j].Key)
 		if !reversed {
 			return cmp < 0

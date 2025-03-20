@@ -490,17 +490,17 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	txn.numIterators.Add(1)
 
 	// TODO: If Prefix is set, only pick those memtables which have keys with the prefix.
-	tables, decr := txn.db.getMemTables()
+	tables, decr := txn.db.getMemTables() // 返回memtable与immemtable的合集
 	defer decr()
-	txn.db.vlog.incrIteratorCount()
-	var iters []y.Iterator
-	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil { //先拿事务中的数据
+	txn.db.vlog.incrIteratorCount()                                   // 内存numActiveIterators，这个数字一旦为0，就可以删除当前vLog对象（就本行的那个vlog）内的ToBeDeleted文件。
+	var iters []y.Iterator                                            //创建迭代器数组
+	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil { //先创建 用于遍历存储当前事务待写入数据的数组的 迭代器
 		iters = append(iters, itr)
 	}
-	for i := 0; i < len(tables); i++ { //拿内存里面的数据
+	for i := 0; i < len(tables); i++ { //为内存里面的每一个memtable及immemtable的跳表创建一个迭代器
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
-	// lc是层级管理器，下面是对每一层创建一个迭代器
+	// lc是层级管理器，下面是对每一层创建一个迭代器 zzlTODO: 看到这里了
 	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references.
 	res := &Iterator{
 		txn:    txn,

@@ -169,6 +169,7 @@ func checkAndSetOptions(opt *Options) error {
 	}
 	// ValueLogFileSize should be strictly LESS than 2<<30 otherwise we will
 	// overflow the uint32 when we mmap it in OpenMemtable.
+	// ValueLogFileSize应严格小于2<<30，否则我们在OpenMemtable中mmap uint32时会溢出uint32。
 	if !(opt.ValueLogFileSize < 2<<30 && opt.ValueLogFileSize >= 1<<20) {
 		return ErrValueLogSize
 	}
