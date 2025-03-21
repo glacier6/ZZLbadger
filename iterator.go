@@ -336,9 +336,9 @@ func (opt *IteratorOptions) compareToPrefix(key []byte) int {
 	// We should compare key without timestamp. For example key - a[TS] might be > "aa" prefix.
 	key = y.ParseKey(key)
 	if len(key) > len(opt.Prefix) {
-		key = key[:len(opt.Prefix)]
+		key = key[:len(opt.Prefix)] //这个的意思是取key的前len(opt.Prefix)位
 	}
-	return bytes.Compare(key, opt.Prefix)
+	return bytes.Compare(key, opt.Prefix) // 两个前缀(字节切片)的比较，就是判断大小，如果a>b返回1,如果a<b返回-1，a=b返回0（a是前者，b是后者）
 }
 
 // 这个函数是为了挑选table，尽量减少需要遍历的table（用于0层筛选SST）
@@ -350,14 +350,14 @@ func (opt *IteratorOptions) pickTable(t table.TableInterface) bool {
 	if len(opt.Prefix) == 0 { //如果遍历器没有指定前缀，那么所有table都需要遍历
 		return true
 	}
-	//下面两个IF是判断是否在区间内
+	//下面两个IF是判断是否在区间内（通过取table的最大最小key的前缀然后与IteratorOptions内的前缀Prefix比较）
 	if opt.compareToPrefix(t.Smallest()) > 0 {
 		return false
 	}
 	if opt.compareToPrefix(t.Biggest()) < 0 {
 		return false
 	}
-	// 在区间内了，还需要利用布隆过滤器再来判断一次
+	// 在区间内了，还需要利用布隆过滤器来判断一定不存在前缀key的table（DoesNotHave函数就是使用布隆判断的函数，其每个table都会有一个）
 	// Bloom filter lookup would only work if opt.Prefix does NOT have the read
 	// timestamp as part of the key.
 	if opt.prefixIsKey && t.DoesNotHave(y.Hash(opt.Prefix)) {
@@ -370,7 +370,7 @@ func (opt *IteratorOptions) pickTable(t table.TableInterface) bool {
 // that the tables are sorted in the right order.
 // 这个也是过滤一些不必遍历的table（用于非0层筛选SST）
 func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
-	filterTables := func(tables []*table.Table) []*table.Table {
+	filterTables := func(tables []*table.Table) []*table.Table { //过滤的闭包函数，主要是判断SinceTs（查询目标的起始版本，只有版本比这个大的才可能会返回）
 		if opt.SinceTs > 0 {
 			tmp := tables[:0]
 			for _, t := range tables {
@@ -384,15 +384,15 @@ func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 		return tables
 	}
 
-	if len(opt.Prefix) == 0 {
+	if len(opt.Prefix) == 0 { //如果无前缀，直接走过滤的闭包函数
 		out := make([]*table.Table, len(all))
 		copy(out, all)
 		return filterTables(out)
 	}
-	sIdx := sort.Search(len(all), func(i int) bool {
+	sIdx := sort.Search(len(all), func(i int) bool { //遍历所有表，找到第一个最大键
 		// table.Biggest >= opt.prefix
 		// if opt.Prefix < table.Biggest, then surely it is not in any of the preceding tables.
-		return opt.compareToPrefix(all[i].Biggest()) >= 0
+		return opt.compareToPrefix(all[i].Biggest()) >= 0 // zzlTODO:
 	})
 	if sIdx == len(all) {
 		// Not found.
@@ -500,7 +500,7 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	for i := 0; i < len(tables); i++ { //为内存里面的每一个memtable及immemtable的跳表创建一个迭代器
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
-	// lc是层级管理器，下面是对每一层创建一个迭代器 zzlTODO: 看到这里了
+	// lc是层级管理器(levelcontroler)，下面是对每一层创建一个迭代器
 	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references.
 	res := &Iterator{
 		txn:    txn,

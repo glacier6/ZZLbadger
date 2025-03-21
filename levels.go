@@ -1671,7 +1671,7 @@ func (s *levelsController) appendIterators(
 	iters []y.Iterator, opt *IteratorOptions) []y.Iterator {
 	// Just like with get, it's important we iterate the levels from 0 on upward, to avoid missing
 	// data when there's a compaction.
-	for _, level := range s.levels {
+	for _, level := range s.levels { //遍历每一层增加
 		iters = level.appendIterators(iters, opt)
 	}
 	return iters

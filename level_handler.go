@@ -315,6 +315,9 @@ func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
 
 // appendIterators appends iterators to an array of iterators, for merging.
 // Note: This obtains references for the table handlers. Remember to close these iterators.
+// appendIterator将迭代器附加到迭代器数组中，以便合并。
+// 注意：这将获取表处理程序的引用。记得关闭这些迭代器。
+// 每执行一次函数，遍历一层
 func (s *levelHandler) appendIterators(iters []y.Iterator, opt *IteratorOptions) []y.Iterator {
 	s.RLock()
 	defer s.RUnlock()
@@ -327,20 +330,23 @@ func (s *levelHandler) appendIterators(iters []y.Iterator, opt *IteratorOptions)
 		// Remember to add in reverse order!
 		// The newer table at the end of s.tables should be added first as it takes precedence.
 		// Level 0 tables are not in key sorted order, so we need to consider them one by one.
+		//记得按相反的顺序添加！
+		//应首先添加s.tables末尾的较新表，因为它具有优先权。
+		//0级表不是按键排序的，因此我们需要逐一考虑它们。
 		var out []*table.Table
-		for _, t := range s.tables {
-			if opt.pickTable(t) {
+		for _, t := range s.tables { //遍历每一个表
+			if opt.pickTable(t) { //判断当前表是否需要添加到迭代器里面
 				out = append(out, t)
 			}
 		}
-		return appendIteratorsReversed(iters, out, topt)
+		return appendIteratorsReversed(iters, out, topt) //将0层判断出需要遍历的表返回
 	}
 
-	tables := opt.pickTables(s.tables)
+	tables := opt.pickTables(s.tables) //取出非0层的需要遍历的表
 	if len(tables) == 0 {
 		return iters
 	}
-	return append(iters, table.NewConcatIterator(tables, topt))
+	return append(iters, table.NewConcatIterator(tables, topt)) //将非0层的表返回
 }
 
 type levelHandlerRLocked struct{}
