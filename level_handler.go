@@ -346,7 +346,7 @@ func (s *levelHandler) appendIterators(iters []y.Iterator, opt *IteratorOptions)
 	if len(tables) == 0 {
 		return iters
 	}
-	return append(iters, table.NewConcatIterator(tables, topt)) //将非0层的表返回
+	return append(iters, table.NewConcatIterator(tables, topt)) //为非0层找到的表创建一个迭代器并加入迭代器数组并返回
 }
 
 type levelHandlerRLocked struct{}

@@ -389,26 +389,26 @@ func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 		copy(out, all)
 		return filterTables(out)
 	}
-	sIdx := sort.Search(len(all), func(i int) bool { //遍历所有表，找到第一个最大键
+	sIdx := sort.Search(len(all), func(i int) bool { //sort.Search是Go提供的结构体遍历，找到第一个表的最大值大于或等于prefix的下标并返回
 		// table.Biggest >= opt.prefix
 		// if opt.Prefix < table.Biggest, then surely it is not in any of the preceding tables.
-		return opt.compareToPrefix(all[i].Biggest()) >= 0 // zzlTODO:
+		return opt.compareToPrefix(all[i].Biggest()) >= 0 //若当前表的最大值前len（prefix）位大于或等于prefix就为true，否则为false
 	})
 	if sIdx == len(all) {
 		// Not found.
 		return []*table.Table{}
 	}
 
-	filtered := all[sIdx:]
+	filtered := all[sIdx:] // 判断出最大值，下面判断最小值
 	if !opt.prefixIsKey {
 		eIdx := sort.Search(len(filtered), func(i int) bool {
-			return opt.compareToPrefix(filtered[i].Smallest()) > 0
+			return opt.compareToPrefix(filtered[i].Smallest()) > 0 //若当前表的最小值前len（prefix）大于prefix就为true，否则为false
 		})
 		out := make([]*table.Table, len(filtered[:eIdx]))
 		copy(out, filtered[:eIdx])
-		return filterTables(out)
+		return filterTables(out) //这里的out最终得到的，就是一个数组，其内元素是最大值前len（prefix）位大于或等于prefix且其最小值前len（prefix）大于prefix的SST（因为判断的是前缀，所以有可能是会返回多个SST的）
 	}
-
+	// 下面的是前缀直接是完整key的话（用于遍历一个key的所有版本）
 	// opt.prefixIsKey == true. This code is optimizing for opt.prefixIsKey part.
 	var out []*table.Table
 	hash := y.Hash(opt.Prefix)
@@ -500,11 +500,11 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	for i := 0; i < len(tables); i++ { //为内存里面的每一个memtable及immemtable的跳表创建一个迭代器
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
-	// lc是层级管理器(levelcontroler)，下面是对每一层创建一个迭代器
+	// lc是层级管理器(levelcontroler)，下面是对每一层创建一个迭代器，并加在iters对象内（注意0层与其他层处理方式不同）
 	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references.
 	res := &Iterator{
 		txn:    txn,
-		iitr:   table.NewMergeIterator(iters, opt.Reverse), // 合并的迭代器，包含事物的，内存的，外存的（按level展开）
+		iitr:   table.NewMergeIterator(iters, opt.Reverse), // 合并的迭代器（二叉树结构），包含事物的，内存的，外存的（按level展开）
 		opt:    opt,
 		readTs: txn.readTs,
 	}
@@ -514,6 +514,8 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 // NewKeyIterator is just like NewIterator, but allows the user to iterate over all versions of a
 // single key. Internally, it sets the Prefix option in provided opt, and uses that prefix to
 // additionally run bloom filter lookups before picking tables from the LSM tree.
+// NewKeyIterator与NewIterator类似，但允许用户迭代单个键的所有版本。
+// 在内部，它在提供的opt中设置Prefix选项，并在从LSM树中拾取表之前使用该前缀额外运行布隆过滤器查找
 func (txn *Txn) NewKeyIterator(key []byte, opt IteratorOptions) *Iterator {
 	if len(opt.Prefix) > 0 {
 		panic("opt.Prefix should be nil for NewKeyIterator.")
@@ -534,6 +536,8 @@ func (it *Iterator) newItem() *Item {
 
 // Item returns pointer to the current key-value pair.
 // This item is only valid until it.Next() gets called.
+// Item返回指向当前键值对的指针。
+// 此项仅在调用.Next（）之前有效。
 func (it *Iterator) Item() *Item {
 	tx := it.txn
 	tx.addReadKey(it.item.Key())
@@ -541,6 +545,7 @@ func (it *Iterator) Item() *Item {
 }
 
 // Valid returns false when iteration is done.
+// 迭代完成后，Valid返回false。
 func (it *Iterator) Valid() bool {
 	if it.item == nil {
 		return false
@@ -588,6 +593,7 @@ func (it *Iterator) Close() {
 
 // Next would advance the iterator by one. Always check it.Valid() after a Next()
 // to ensure you have access to a valid it.Item().
+// 接下来，将迭代器前进一步。始终在Next（）后检查it.Valid（），以确保您可以访问有效的it.Item（）。
 func (it *Iterator) Next() {
 	if it.iitr == nil {
 		return
@@ -625,24 +631,26 @@ func isDeletedOrExpired(meta byte, expiresAt uint64) bool {
 // or it has pushed an item into it.data list, else it returns false.
 //
 // This function advances the iterator.
-// parseItem是一个复杂的函数，因为它需要处理正向和反向迭代实现。我们存储key，使其版本按降序排列。
+// parseItem（中文为分析item）是一个复杂的函数，因为它需要处理正向和反向迭代实现。我们存储key，使其版本按降序排列。
 // 这使得正向迭代高效，但揭示了迭代的复杂性。这种权衡更好，因为正向迭代比反向迭代更常见。如果迭代器无效或已将项推入.data列表，则返回true，否则返回false。
 // 此函数用于推进迭代器。
+// PS：在预读取时，注意这个函数每次预读取出来一个KV对，若无效，在调用此函数的那里舍弃掉，若有效就返回计数。
+// 而也正因此，每次的lastKey只是代表一个上一个取出的key的单值（不是切片），因为每次取出来之后lastKey就在当轮没用了
 func (it *Iterator) parseItem() bool {
 	mi := it.iitr
 	key := mi.Key()
 
-	setItem := func(item *Item) {
+	setItem := func(item *Item) { // 得到有效KV对，放到迭代器的链表中
 		if it.item == nil {
 			it.item = item
 		} else {
-			it.data.push(item) //设置到迭代器的链表里
+			it.data.push(item) // 设置到迭代器的链表里
 		}
 	}
 
+	// 下面这行还有下面这个if都是为了跳过badger内部的key
 	isInternalKey := bytes.HasPrefix(key, badgerPrefix)
 	// Skip badger keys.
-	// 跳过badger内部的key
 	if !it.opt.InternalAccess && isInternalKey {
 		mi.Next()
 		return false
@@ -651,21 +659,22 @@ func (it *Iterator) parseItem() bool {
 	// Skip any versions which are beyond the readTs.
 	version := y.ParseTs(key)
 	// Ignore everything that is above the readTs and below or at the sinceTs.
-	if version > it.readTs || (it.opt.SinceTs > 0 && version <= it.opt.SinceTs) { //如果目标key的版本号（时间戳）大于当前查询事务的版本号，则代表这个key是在当前事务之后创建的，不应该被查询出来
+	if version > it.readTs || (it.opt.SinceTs > 0 && version <= it.opt.SinceTs) { //如果目标key的版本号（时间戳）大于当前查询事务的版本号，说明这是在此迭代器开始之后写入的key不能被读取
 		mi.Next()
 		return false
 	}
 
 	// Skip banned keys only if it does not have badger internal prefix.
+	// 跳过被禁用的key，仅当它不是badger内部KV
 	if !isInternalKey && it.txn.db.isBanned(key) != nil {
 		mi.Next()
 		return false
 	}
 
-	if it.opt.AllVersions {
+	if it.opt.AllVersions { // 如果指定返回所有版本的key则无论迭代到什么key都直接返回
 		// Return deleted or expired values also, otherwise user can't figure out
 		// whether the key was deleted.
-		//还返回已删除或过期的值，否则用户无法确定密钥是否已删除。（不包括当前事务之后创建的key）
+		//还返回已删除或过期的值，否则用户无法确定key是否已删除。（不包括当前事务之后创建的key）
 		item := it.newItem()
 		it.fill(item)
 		setItem(item)
@@ -675,8 +684,10 @@ func (it *Iterator) parseItem() bool {
 
 	// If iterating in forward direction, then just checking the last key against current key would
 	// be sufficient.
+	// 如果向前迭代，那么只需将最后一个键与当前键进行比较就足够了。
+	// PS：应该是只要取出来第一个key就可以了，因为这个是最新的
 	if !it.opt.Reverse {
-		if y.SameKey(it.lastKey, key) { //诺是老版本的key，就排除（前面已经读出来新版的key了)
+		if y.SameKey(it.lastKey, key) { //若是老版本的已经取出来的key，就排除（在前面的轮询中已经读出来新版的key了)
 			mi.Next()
 			return false
 		}
@@ -690,19 +701,20 @@ func (it *Iterator) parseItem() bool {
 		//考虑键：a 5，b 7（del），b 5。迭代时，lastKey=a。
 		//然后我们看到b7，它被删除了。如果我们不存储lastKey=b，那么我们将返回b5，
 		//这是错误的。因此，请在此处更新lastKey。
-		it.lastKey = y.SafeCopy(it.lastKey, mi.Key())
+		// PS：就是后增加的被删掉了，只剩一个老版本的，这个老版本的也不应该被读出来
+		it.lastKey = y.SafeCopy(it.lastKey, mi.Key()) //it.lastKey用来记录当前查询到的key，便于之后的比较版本等
 	}
 
 FILL:
 	// If deleted, advance and return.
 	vs := mi.Value()
-	if isDeletedOrExpired(vs.Meta, vs.ExpiresAt) {
+	if isDeletedOrExpired(vs.Meta, vs.ExpiresAt) { //解析value的值，并从中判断是否过期与删除
 		mi.Next()
 		return false
 	}
 
-	item := it.newItem()
-	it.fill(item) //获取item
+	item := it.newItem() // zzlTODO:看到这里了，对应遍历kv步骤的第7步
+	it.fill(item)        //获取item
 	// fill item based on current cursor position. All Next calls have returned, so reaching here
 	// means no Next was called.
 
@@ -764,8 +776,8 @@ func (it *Iterator) prefetch() {
 	var count int
 	it.item = nil
 	for i.Valid() && hasPrefix(it) {
-		if !it.parseItem() {
-			continue
+		if !it.parseItem() { //核心操作，对单个KV对进行分析
+			continue //读出来无效的kv对，如badger的内部KV以及版本不对的，则不计数
 		}
 		count++
 		if count == prefetchSize { //读出来的有效个数达到设置的预取上限
@@ -777,25 +789,27 @@ func (it *Iterator) prefetch() {
 // Seek would seek to the provided key if present. If absent, it would seek to the next
 // smallest key greater than the provided key if iterating in the forward direction.
 // Behavior would be reversed if iterating backwards.
+// 如果存在，Seek将查找提供的key。如果不存在，如果向前迭代，它将寻求比提供的键大的下一个最小键。如果向后迭代，行为将发生逆转。
+// 如果len(key) = 0，那么就代表是初始化操作
 func (it *Iterator) Seek(key []byte) {
 	if it.iitr == nil {
 		return
 	}
-	if len(key) > 0 {
+	if len(key) > 0 { //非初始化，就是读
 		it.txn.addReadKey(key)
 	}
-	for i := it.data.pop(); i != nil; i = it.data.pop() { // it.data是一个列表，存的是预读取的数据
+	for i := it.data.pop(); i != nil; i = it.data.pop() { // it.data是一个链表，存的是预读取的数据
 		i.wg.Wait() //做一个小范围的异步，等待vlog中的值读到内存 NOTE:0
 		it.waste.push(i)
 	}
 
-	it.lastKey = it.lastKey[:0]
-	if len(key) == 0 {
+	it.lastKey = it.lastKey[:0] // [:0] 操作会创建一个新的切片，这个新切片与原切片共享底层数组（即原始数据实际还在），但新切片的长度为 0，容量不变。
+	if len(key) == 0 {          //如果是初始化，则将prefix设置为要搜索的key
 		key = it.opt.Prefix
 	}
 	if len(key) == 0 {
 		it.iitr.Rewind() //调整迭代器的平衡二叉树，保证range key是从小到大的顺序读取的
-		it.prefetch()    //预取操作，真的要读了
+		it.prefetch()    //核心操作，预取操作，真的要读了
 		return
 	}
 
@@ -811,6 +825,8 @@ func (it *Iterator) Seek(key []byte) {
 // Rewind would rewind the iterator cursor all the way to zero-th position, which would be the
 // smallest key if iterating forward, and largest if iterating backward. It does not keep track of
 // whether the cursor started with a Seek().
+// Rewind会将迭代器光标一直倒退到第零个位置，如果向前迭代，这将是最小的键，如果向后迭代，则是最大的键。
+// 它不会跟踪光标是否以Seek（）开头。
 func (it *Iterator) Rewind() {
-	it.Seek(nil) //查找一个不存在的key就把指针指向0
+	it.Seek(nil) //查找一个不存在的key就把指针指向0，并且做一些初始化操作
 }

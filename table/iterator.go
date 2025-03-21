@@ -459,6 +459,7 @@ type ConcatIterator struct {
 }
 
 // NewConcatIterator creates a new concatenated iterator
+// NewConcatIterator创建一个新的级联迭代器
 func NewConcatIterator(tbls []*Table, opt int) *ConcatIterator {
 	iters := make([]*Iterator, len(tbls))
 	for i := 0; i < len(tbls); i++ {
