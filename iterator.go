@@ -159,15 +159,15 @@ func (item *Item) yieldItemValue() ([]byte, func(), error) {
 
 	if (item.meta & bitValuePointer) == 0 { //判断是否是kv分离的值
 		//不是kv分离
-		val := item.slice.Resize(len(item.vptr))
+		val := item.slice.Resize(len(item.vptr)) //直接把目标的Value切出来
 		copy(val, item.vptr)
 		return val, nil, nil
 	}
 	// 是kv分离
 	var vp valuePointer
-	vp.Decode(item.vptr)
+	vp.Decode(item.vptr) //解码值指针
 	db := item.txn.db
-	result, cb, err := db.vlog.Read(vp, item.slice) // 去磁盘读目标value
+	result, cb, err := db.vlog.Read(vp, item.slice) // 核心操作，去磁盘读目标value
 	if err != nil {
 		db.opt.Errorf("Unable to read: Key: %v, Version : %v, meta: %v, userMeta: %v"+
 			" Error: %v", key, item.version, item.meta, item.userMeta, err)
@@ -207,7 +207,7 @@ func runCallback(cb func()) {
 }
 
 func (item *Item) prefetchValue() {
-	val, cb, err := item.yieldItemValue() // 获取item的value值
+	val, cb, err := item.yieldItemValue() // 核心操作，获取item的value值
 	defer runCallback(cb)
 
 	item.err = err
@@ -319,6 +319,7 @@ type IteratorOptions struct {
 	PrefetchSize int
 	// PrefetchValues Indicates whether we should prefetch values during
 	// iteration and store them.
+	//PrefetchValues指示我们是否应该在迭代期间预取值并存储它们。
 	PrefetchValues bool
 	Reverse        bool // Direction of iteration. False is forward, true is backward.
 	AllVersions    bool // Fetch all valid versions of the same key.
@@ -452,7 +453,7 @@ type Iterator struct {
 	lastKey []byte // Used to skip over multiple versions of the same key.
 
 	closed  bool
-	scanned int // Used to estimate the size of data scanned by iterator.
+	scanned int // Used to estimate the size of data scanned by iterator. //用于估计迭代器扫描的数据大小。
 
 	// ThreadId is an optional value that can be set to identify which goroutine created
 	// the iterator. It can be used, for example, to uniquely identify each of the
@@ -599,9 +600,9 @@ func (it *Iterator) Next() {
 		return
 	}
 	// Reuse current item
-	it.item.wg.Wait() // Just cleaner to wait before pushing to avoid doing ref counting.
-	it.scanned += len(it.item.key) + len(it.item.val) + len(it.item.vptr) + 2
-	it.waste.push(it.item)
+	it.item.wg.Wait()                                                         // Just cleaner to wait before pushing to avoid doing ref counting.//只需在推之前等待清洁，以避免进行引用计数。
+	it.scanned += len(it.item.key) + len(it.item.val) + len(it.item.vptr) + 2 //累计扫描的大小
+	it.waste.push(it.item)                                                    //将当前扫描过的都放到waste里面
 
 	// Set next item to current
 	it.item = it.data.pop()
@@ -644,7 +645,7 @@ func (it *Iterator) parseItem() bool {
 		if it.item == nil {
 			it.item = item
 		} else {
-			it.data.push(item) // 设置到迭代器的链表里
+			it.data.push(item) // 设置到迭代器的链表里，方便 NOTE: 0 处遍历
 		}
 	}
 
@@ -713,10 +714,11 @@ FILL:
 		return false
 	}
 
-	item := it.newItem() // zzlTODO:看到这里了，对应遍历kv步骤的第7步
-	it.fill(item)        //获取item
+	item := it.newItem()
+	it.fill(item) //获取item
 	// fill item based on current cursor position. All Next calls have returned, so reaching here
 	// means no Next was called.
+	// 根据当前光标位置填充项目。所有Next调用都已返回，因此到达此处意味着没有调用Next。
 
 	mi.Next()                           //判断下一个                           // Advance but no fill item yet.
 	if !it.opt.Reverse || !mi.Valid() { // Forward direction, or invalid.
@@ -747,9 +749,9 @@ func (it *Iterator) fill(item *Item) {
 
 	item.vptr = y.SafeCopy(item.vptr, vs.Value) // 值指针对象
 	item.val = nil
-	if it.opt.PrefetchValues {
+	if it.opt.PrefetchValues { //PrefetchValues指示我们是否应该在迭代期间预取值并存储它们。
 		item.wg.Add(1) //这里是go语言的并发控制的一个组件
-		go func() {
+		go func() {    // 创建一个协程异步的读取vlog文件
 			// FIXME we are not handling errors here.
 			item.prefetchValue() //从vlog里面去拿
 			item.wg.Done()       //这里就是前面有个wg.wait的地方 NOTE:0 处

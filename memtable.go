@@ -478,12 +478,13 @@ func (lf *logFile) iterate(readOnly bool, offset uint32, fn logEntry) (uint32, e
 	var vptrs []valuePointer
 
 loop:
-	for {
-		e, err := read.Entry(reader)
+	for { //遍历KV对
+		e, err := read.Entry(reader) //核心操作，在reader读取器中取出来一个KV对
 		switch {
 		// We have not reached the end of the file but the entry we read is
 		// zero. This happens because we have truncated the file and
 		// zero'ed it out.
+		// 我们还没有到达文件的末尾，但我们读取的KV为零。这是因为我们截断了文件并将其归零。
 		case err == io.EOF:
 			break loop
 		case err == io.ErrUnexpectedEOF || err == errTruncate:
@@ -499,12 +500,11 @@ loop:
 		//下面这五行代码就是对值指针的一个拼接
 		var vp valuePointer
 		vp.Len = uint32(e.hlen + len(e.Key) + len(e.Value) + crc32.Size)
-		read.recordOffset += vp.Len
-
+		read.recordOffset += vp.Len //读取出来之后要移动读取器的偏移量
 		vp.Offset = e.offset
 		vp.Fid = lf.fid
 
-		switch {
+		switch { // GO的switch默认会自动break
 		case e.meta&bitTxn > 0:
 			txnTs := y.ParseTs(e.Key)
 			if lastCommit == 0 {

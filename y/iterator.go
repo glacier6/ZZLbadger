@@ -23,6 +23,7 @@ import (
 
 // ValueStruct represents the value info that can be associated with a key, but also the internal
 // Meta field.
+// ValueStruct表示可以与键关联的值信息，也表示内部Meta字段。
 type ValueStruct struct {
 	Meta      byte
 	UserMeta  byte

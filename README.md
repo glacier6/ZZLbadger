@@ -22,10 +22,12 @@ ZZL写在最前：
     不是，里面有各个块的信息（这个信息貌似是以Mmap方式存储在内存的），找目标key先找到目标块，然后再看这个块是否在cache中，不在的话去磁盘找
   7.TODO: 索引缓存在哪里用的？
   8.TODO: mmap具体如何，何时返回磁盘的？（看ristretto怎么用即可）
+  9.TODO: GC按理来说应该是定期会自动检查的（可能在日志合并的时候？），难道是需要自己去手动调RunValueLogGC这个函数吗？
 
 (3)一些简称
   lc levercontroler 层级管理器
   lf logFile log文件对象
+  vp valuePointer 值指针
 
 (4)注意Badger 本身不进行分发，Dgraph 在其之上实现了一层来提供分布式功能。
 

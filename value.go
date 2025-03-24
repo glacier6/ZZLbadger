@@ -52,8 +52,8 @@ const (
 	// Set if item shouldn't be discarded via compactions (used by merge operator)
 	bitMergeEntry byte = 1 << 3
 	// The MSB 2 bits are for transactions.
-	bitTxn    byte = 1 << 6 // Set if the entry is part of a txn.
-	bitFinTxn byte = 1 << 7 // Set if the entry is to indicate end of txn in value log.
+	bitTxn    byte = 1 << 6 // Set if the entry is part of a txn. 设置该条目是否为txn的一部分。
+	bitFinTxn byte = 1 << 7 // Set if the entry is to indicate end of txn in value log. 设置该条目是否指示值日志中txn的结束。
 
 	mi int64 = 1 << 20 //nolint:unused
 
@@ -117,6 +117,7 @@ func (t *hashReader) Sum32() uint32 {
 
 // Entry reads an entry from the provided reader. It also validates the checksum for every entry
 // read. Returns error on failure.
+// Entry函数从提供的阅读器中读取条目。它还验证读取的每个条目的校验和。失败时返回错误。
 func (r *safeRead) Entry(reader io.Reader) (*Entry, error) {
 	tee := newHashReader(reader)
 	var h header
@@ -183,7 +184,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 	vlog.filesLock.RUnlock()
 
 	vlog.opt.Infof("Rewriting fid: %d", f.fid)
-	wb := make([]*Entry, 0, 1000) //存放KV数量的缓冲区？
+	wb := make([]*Entry, 0, 1000) //存放KV对的缓冲区
 	var size int64
 
 	y.AssertTrue(vlog.db != nil)
@@ -212,11 +213,13 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		vp.Decode(vs.Value) // 当前value还是一个字节数组，需要进行编解码，序列化
 
 		// If the entry found from the LSM Tree points to a newer vlog file, don't do anything.
+		// 如果从LSM树中找到的条目指向较新的vlog文件，请不要做任何事情。
 		if vp.Fid > f.fid {
 			return nil
 		}
 		// If the entry found from the LSM Tree points to an offset greater than the one
 		// read from vlog, don't do anything.
+		// 如果从LSM树中找到的条目指向的偏移量大于从vlog中读取的偏移量，请不要做任何事情。
 		if vp.Offset > e.offset {
 			return nil
 		}
@@ -224,13 +227,16 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		// insert them back into the DB.
 		// NOTE: It might be possible that the entry read from the LSM Tree points to
 		// an older vlog file. See the comments in the else part.
-		if vp.Fid == f.fid && vp.Offset == e.offset { //都匹配的上，证明是一个有效的KV
-			moved++ //移除的计数位+1
+		// 如果从LSM树和vlog文件读取的条目指向相同的vlog文件和偏移量，请将它们重新插入数据库。
+		// 注意：从LSM树读取的条目可能指向较旧的vlog文件。请参阅其他部分的评论。
+		if vp.Fid == f.fid && vp.Offset == e.offset {
+			//vp（LSM树的）与e（Vlog的）都匹配的上，证明是一个有效的KV
+			moved++ //移动（即有效KV对）的计数位+1
 			// This new entry only contains the key, and a pointer to the value.
 			ne := new(Entry)
 			// Remove only the bitValuePointer and transaction markers. We
 			// should keep the other bits.
-			ne.meta = e.meta &^ (bitValuePointer | bitTxn | bitFinTxn) //下面这几行做一个拼接处理
+			ne.meta = e.meta &^ (bitValuePointer | bitTxn | bitFinTxn) //下面这几行做一个拼接处理，创建一个新的KV对对象
 			ne.UserMeta = e.UserMeta
 			ne.ExpiresAt = e.ExpiresAt
 			ne.Key = append([]byte{}, e.Key...)
@@ -242,7 +248,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 			es += int64(len(e.Value))
 
 			// Ensure length and size of wb is within transaction limits.
-			if int64(len(wb)+1) >= vlog.opt.maxBatchCount || //批量的操作
+			if int64(len(wb)+1) >= vlog.opt.maxBatchCount || //缓冲区wb达到阈值，进行批量的操作
 				size+es >= vlog.opt.maxBatchSize {
 				if err := vlog.db.batchSet(wb); err != nil { //把判断有效的KV对重新写回LSM tree以及Vlog（批处理，基本与普通写入流程一致，即伪装成一次批量的写请求）
 					return err
@@ -250,7 +256,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 				size = 0
 				wb = wb[:0]
 			}
-			wb = append(wb, ne)
+			wb = append(wb, ne) //缓冲区累计
 			size += es
 		} else { //nolint:staticcheck
 			// It might be possible that the entry read from LSM Tree points to
@@ -307,7 +313,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		return nil
 	}
 
-	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error { //对Vlog文件内进行迭代
+	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error { //核心操作，对Vlog文件内进行迭代，依次对每一个取出来的KV对执行fe闭包函数
 		return fe(e)
 	})
 	if err != nil {
@@ -316,7 +322,8 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 
 	batchSize := 1024
 	var loops int
-	for i := 0; i < len(wb); { //对于上面那个批处理结束的时候，因未满一个批，仍留在缓冲区中的KV进行处理
+	//对于上面那个批处理结束的时候，因未满一个批，仍留在缓冲区wb中的KV进行处理
+	for i := 0; i < len(wb); {
 		loops++
 		if batchSize == 0 {
 			vlog.db.opt.Warningf("We shouldn't reach batch size of zero.")
@@ -405,6 +412,7 @@ func (vlog *valueLog) deleteLogFile(lf *logFile) error {
 	lf.lock.Lock()
 	defer lf.lock.Unlock()
 	// Delete fid from discard stats as well.
+	// 在脏键统计表中移除已经GC过的Fid
 	vlog.discardStats.Update(lf.fid, -1)
 
 	return lf.Delete()
@@ -556,8 +564,8 @@ func (vlog *valueLog) init(db *DB) {
 	}
 	vlog.dirPath = vlog.opt.ValueDir
 
-	vlog.garbageCh = make(chan struct{}, 1) // Only allow one GC at a time.
-	lf, err := InitDiscardStats(vlog.opt)   //这里创建的DISCARD文件是用作GC的
+	vlog.garbageCh = make(chan struct{}, 1) // 同一时间只允许一个GC运行
+	lf, err := InitDiscardStats(vlog.opt)   // 这里创建的DISCARD文件是用作GC的
 	y.Check(err)
 	vlog.discardStats = lf
 	// See TestPersistLFDiscardStats for purpose of statement below.
@@ -957,7 +965,7 @@ func (vlog *valueLog) getFileRLocked(vp valuePointer) (*logFile, error) {
 	return ret, nil
 }
 
-// Read reads the value log at a given location.
+// Read reads the value log at a given location.//Read读取给定位置的值日志。
 // TODO: Make this read private.
 func (vlog *valueLog) Read(vp valuePointer, _ *y.Slice) ([]byte, func(), error) {
 	buf, lf, err := vlog.readValueBytes(vp) //关键
@@ -1027,7 +1035,8 @@ func (vlog *valueLog) pickLog(discardRatio float64) *logFile {
 
 LOOP:
 	// Pick a candidate that contains the largest amount of discardable data
-	fid, discard := vlog.discardStats.MaxDiscard() //discard是在磁盘中的一个文件，其会标记哪些KV是可以回收的，也记录 FID:该文件中垃圾KV对数量（每个关系就是一个16bit的slot），而这行是获取一个可回收KV数量最多的日志段
+	//discard是在磁盘中的一个文件，其会标记哪些KV是可以回收的，也记录 FID:该文件中垃圾KV对数量（每个关系就是一个16bit的slot）
+	fid, discard := vlog.discardStats.MaxDiscard() //得到包含最多可丢弃数据的vlog文件的fid，以及当前Vlog需要丢弃的KV对的总大小
 
 	// MaxDiscard will return fid=0 if it doesn't have any discard data. The
 	// vlog files start from 1.
@@ -1038,17 +1047,18 @@ LOOP:
 	lf, ok := vlog.filesMap[fid] //取相应的Vlog文件
 	// This file was deleted but it's discard stats increased because of compactions. The file
 	// doesn't exist so we don't need to do anything. Skip it and retry.
-	if !ok { //如果没取到vlog文件
+	//此文件已被删除，但由于压缩，其丢弃统计数据增加。文件不存在，所以我们不需要做任何事情。跳过它并重试。
+	if !ok { //如果没取到vlog文件，在脏键统计表中移除已经GC过的Fid
 		vlog.discardStats.Update(fid, -1)
 		goto LOOP
 	}
-	// We have a valid file.
-	fi, err := lf.Fd.Stat()
+	// We have a valid file.现在，我们有了一个合法需要处理的文件
+	fi, err := lf.Fd.Stat() //这个用的GO语言自带的库，得到VLog文件的状态
 	if err != nil {
 		vlog.opt.Errorf("Unable to get stats for value log fid: %d err: %+v", fi, err)
 		return nil
 	}
-	if thr := discardRatio * float64(fi.Size()); float64(discard) < thr { // 如果实际需要回收的键值对数量小于设定的阈值
+	if thr := discardRatio * float64(fi.Size()); float64(discard) < thr { // 如果实际需要回收的键值对大小小于设定的阈值
 		vlog.opt.Debugf("Discard: %d less than threshold: %.0f for file: %s",
 			discard, thr, fi.Name())
 		return nil
@@ -1088,10 +1098,11 @@ func (vlog *valueLog) doRunGC(lf *logFile) error {
 	_, span := otrace.StartSpan(context.Background(), "Badger.GC")
 	span.Annotatef(nil, "GC rewrite for: %v", lf.path)
 	defer span.End()
-	if err := vlog.rewrite(lf); err != nil { //对Vlog进行重写
+	if err := vlog.rewrite(lf); err != nil { //核心操作，对Vlog进行重写
 		return err
 	}
 	// Remove the file from discardStats.
+	// 在脏键统计表中移除已经GC过的Fid
 	vlog.discardStats.Update(lf.fid, -1)
 	return nil
 }
@@ -1103,22 +1114,23 @@ func (vlog *valueLog) waitOnGC(lc *z.Closer) {
 
 	// Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
 	// the channel of size 1.
+	// 阻止任何正在进行的GC完成，并通过填充大小为1的通道来阻止对runGC的任何写入。
 	vlog.garbageCh <- struct{}{}
 }
 
 func (vlog *valueLog) runGC(discardRatio float64) error {
 	select {
-	case vlog.garbageCh <- struct{}{}: //这两行做了GC的拥塞控制，同一时间只能有一个GC在运行
+	case vlog.garbageCh <- struct{}{}: //这两行做了GC的拥塞控制，同一时间只能有一个GC在运行（通过创建一个长度的通道，然后填满来阻塞其他创建）
 		// Pick a log file for GC.
 		defer func() {
 			<-vlog.garbageCh
 		}()
 
-		lf := vlog.pickLog(discardRatio) // 选择一个Vlog文件（这里得到的是Vlog文件的FID，并不是真的Vlog文件，所以全部是在内存操作的）
+		lf := vlog.pickLog(discardRatio) // 核心操作，选择一个Vlog文件（这里得到的是Vlog文件的FID，并不是真的Vlog文件，所以全部是在内存操作的）
 		if lf == nil {
 			return ErrNoRewrite
 		}
-		return vlog.doRunGC(lf)
+		return vlog.doRunGC(lf) // 核心操作，对选取到的Vlog文件实际进行GC
 	default:
 		return ErrRejected //GC被拒绝
 	}
