@@ -358,7 +358,7 @@ func (s *levelsController) startCompact(lc *z.Closer) {
 	n := s.kv.opt.NumCompactors // 从配置中拿配置项，默认开4个协程（这个是经过测试的，4个协程进行处理是最好的）
 	lc.AddRunning(n - 1)
 	for i := 0; i < n; i++ {
-		go s.runCompactor(i, lc) //开启压缩器协程
+		go s.runCompactor(i, lc) //核心操作，开启压缩器协程
 	}
 }
 
@@ -381,6 +381,14 @@ type targets struct {
 // example, when L6 reaches 1.1GB, then L4 target sizes becomes 11MB, thus exceeding the
 // BaseLevelSize of 10MB. L3 would then become the new Lbase, with a target size of 1MB <
 // BaseLevelSize.
+// levelTargets计算LSM树中层级的目标。这个想法来自动态水平尺寸（https://rocksdb.org/blog/2015/07/23/dynamic-level.html）在RocksDB。
+// 每一层的大小是基于最低层（通常为L6）的大小动态计算的。所以，如果L6大小为1GB，那么L5目标大小为100MB，L4目标大小为10MB，以此类推。这里的这个大小就是下面的那个BaseLevelSize
+//
+// L0文件不会自动转到L1。相反，它们被压缩到Lbase，其中Lbase是根据从顶部开始的非空的第一层来选择的（检查L1到L6）。
+// 对于一个空DB，这将是L6。因此，L0压缩到L6，然后是L5、L4，以此类推。
+//
+// 当Lbase的目标大小超过BaseLevelSize（可以理解为给该层分配的大小）时，它会被提升到更高的级别。
+// 例如，当L6达到1.1GB时，L4的目标大小变为11MB，从而超过了10MB的BaseLevelSize。L3将成为新的Lbase，目标大小为1MB<BaseLevelSize。
 func (s *levelsController) levelTargets() targets {
 	adjust := func(sz int64) int64 {
 		if sz < s.kv.opt.BaseLevelSize {
@@ -438,13 +446,15 @@ func (s *levelsController) levelTargets() targets {
 	return t
 }
 
+// id表示的是当前协程编号（从0开始编号，默认0，1，2，3四个协程）
 func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 	defer lc.Done() //做协程的并发控制（应该是关闭协程）
 
-	randomDelay := time.NewTimer(time.Duration(rand.Int31n(1000)) * time.Millisecond) // 创建一个0~1000ms的随即延迟，是为了减少协程之间的冲突，来提高并发
+	randomDelay := time.NewTimer(time.Duration(rand.Int31n(1000)) * time.Millisecond) // 创建一个0~1000ms的随即延迟，使得各个协程执行的时间岔开，即是为了减少协程之间的冲突，来提高并发
+	// 计时结束，NewTimer函数会自动向randomDelay.C写入一个数据
 	select {
-	case <-randomDelay.C:
-	case <-lc.HasBeenClosed():
+	case <-randomDelay.C: //能取出这个数的话，代表计时到了,取不出来就一直阻塞
+	case <-lc.HasBeenClosed(): //当调用Signal（）时，HasBeenColosed会收到信号。然后在这里就会有可以从chan中取得数据，就会把计时器关闭
 		randomDelay.Stop()
 		return
 	}
@@ -468,8 +478,9 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 		return prios
 	}
 
-	run := func(p compactionPriority) bool { // p里面存着从哪压缩到哪
-		err := s.doCompact(id, p) // 执行压缩器
+	// 这个函数是合并的基本函数，其在跳层合并以及普通合并中都会用到，p里面存着从哪压缩到哪
+	run := func(p compactionPriority) bool {
+		err := s.doCompact(id, p) // 核心操作，执行压缩器
 		switch err {
 		case nil:
 			return true
@@ -481,19 +492,21 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 		return false
 	}
 
-	var priosBuffer []compactionPriority
+	var priosBuffer []compactionPriority //合并优先级数组
 	runOnce := func() bool {
-		prios := s.pickCompactLevels(priosBuffer)
+		// zzlTODO:看到这里了，怎么计算出来的，需要先看那个介绍层级压缩网址，源码分析课件写的东西太少了，这里需要自己看
+		prios := s.pickCompactLevels(priosBuffer) //核心操作，计算出当前的 合并优先级对象 数组
 		defer func() {
 			priosBuffer = prios
 		}()
 		if id == 0 {
-			// Worker ID zero prefers to compact L0 always.
+			// 只让0号协程压缩L0层
 			prios = moveL0toFront(prios)
 		}
-		for _, p := range prios {
+		for _, p := range prios { //遍历这个切片，并取出来每层对应的优先级对象 p
 			if id == 0 && p.level == 0 {
 				// Allow worker zero to run level 0, irrespective of its adjusted score.
+				// 让0号协程去处理L0层，不用管调整后的分数（优先级）是如何的
 			} else if p.adjusted < 1.0 {
 				break
 			}
@@ -508,27 +521,30 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 	tryLmaxToLmaxCompaction := func() {
 		p := compactionPriority{ //合并优先级对象
 			level: s.lastLevel().level, //获取最后一层的层号（第6层）
-			t:     s.levelTargets(),    //目标层，谁向p.level合并
+			t:     s.levelTargets(),    //目标层，谁向最后一层合并
 		}
 		run(p)
 
 	}
-	count := 0
+	count := 0                                      // 专用于2号合并器的跳层合并的计数器，达到200执行跳层合并
 	ticker := time.NewTicker(50 * time.Millisecond) //创建一个50ms的时钟
 	defer ticker.Stop()
-	for {
+	for { //无限循环
 		select {
 		// Can add a done channel or other stuff.
-		case <-ticker.C: //每50ms执行一次
+		case <-ticker.C: //每50ms执行一次合并 ，上面那几个闭包函数合并时在时间上一般的执行顺序（需要看的顺序）为runOnce（），moveL0toFront（），run（），tryLmaxToLmaxCompaction（）
 			count++
 			// Each ticker is 50ms so 50*200=10seconds.
 			if s.kv.opt.LmaxCompaction && id == 2 && count >= 200 { // 注意只有2号协程才会执行跳层合并的操作，且每10秒才会执行一次这个操作
-				tryLmaxToLmaxCompaction() // 这里做的是那个为了减少写放大，进行跳层合并（如果从0-6依次进行合并，那么L0层的数据可能会合并6次到6层，而这个跳层合并就解决了这个问题，是一个优化，LmaxCompaction参数就是控制这个功能是否开启）
+				tryLmaxToLmaxCompaction() // 这里做的是那个为了减少写放大以及空间放大，进行跳层合并
+				// 即如果数据库为空的时候，会从0-6依次进行合并，那么L0层的数据可能会合并6次到6层，而这个跳层合并就解决了这个问题，从L0层直接倒序合并，先与Lbase合并
+				// Lbase是根据从顶部开始的非空的第一层来选择的（检查L1到L6），即若是全空的话会先与最底层L6合并
+				// LmaxCompaction参数就是控制这个功能是否开启
 				count = 0
 			} else {
 				runOnce() //其余的进行普通的压缩
 			}
-		case <-lc.HasBeenClosed(): //或者关闭掉
+		case <-lc.HasBeenClosed(): //或者有通知要关闭的时候，关闭掉
 			return
 		}
 	}
@@ -550,6 +566,10 @@ func (s *levelsController) lastLevel() *levelHandler {
 // Based on: https://github.com/facebook/rocksdb/wiki/Leveled-Compaction
 // It tries to reuse priosBuffer to reduce memory allocation,
 // passing nil is acceptable, then new memory will be allocated.
+// pickCompactLevel决定要压缩哪个级别。priosBuffer内会存
+// 基于：https://github.com/facebook/rocksdb/wiki/Leveled-Compaction
+// 它试图重用priosBuffer来减少内存分配，
+// 传递nil是可以接受的，然后将分配新的内存。
 func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (prios []compactionPriority) {
 	t := s.levelTargets()
 	addPriority := func(level int, score float64) {
@@ -1524,8 +1544,8 @@ func tablesToString(tables []*table.Table) []string {
 var errFillTables = stderrors.New("Unable to fill tables")
 
 // doCompact picks some table on level l and compacts it away to the next level.
-// doCompact在l层拾取一些表并将其压缩到下一层。
-func (s *levelsController) doCompact(id int, p compactionPriority) error { //id是压缩协程的id
+// doCompact在l层拾取一些表并将其压缩到下一层。id是压缩协程的id
+func (s *levelsController) doCompact(id int, p compactionPriority) error {
 	l := p.level                         // l层是当前层
 	y.AssertTrue(l < s.kv.opt.MaxLevels) // Sanity check.
 	if p.t.baseLevel == 0 {

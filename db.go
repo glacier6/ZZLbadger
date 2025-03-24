@@ -362,7 +362,7 @@ func Open(opt Options) (*DB, error) {
 	if !opt.ReadOnly {
 		// 下面是启动LSM Tree的日志归并的协程
 		db.closers.compactors = z.NewCloser(1)
-		db.lc.startCompact(db.closers.compactors) //启动日志合并
+		db.lc.startCompact(db.closers.compactors) //核心操作，启动日志合并
 
 		db.closers.memtable = z.NewCloser(1)
 		go func() {
@@ -497,6 +497,7 @@ func (db *DB) monitorCache(c *z.Closer) {
 
 // cleanup stops all the goroutines started by badger. This is used in open to
 // cleanup goroutines in case of an error.
+// cleanup关闭了badger发起的所有协程。这用于在发生错误时清理开放的协程。
 func (db *DB) cleanup() {
 	db.stopMemoryFlush()
 	db.stopCompactions()
@@ -1631,6 +1632,9 @@ func (db *DB) startMemoryFlush() {
 // levels, which is necessary after a restore from backup. During Flatten, live compactions are
 // stopped. Ideally, no writes are going on during Flatten. Otherwise, it would create competition
 // between flattening the tree and new tables being created at level zero.
+// Flatten可用于强制压缩LSM树，使所有table都落在同一水平面上。
+// 这确保了所有版本的key都位于同一位置，而不是在多个级别上拆分，这在从备份还原后是必要的。
+// 在压平过程中，实时压实停止。理想情况下，Flatten期间不会进行任何写作。否则，它将在压平树和在零级创建新表之间产生竞争。
 func (db *DB) Flatten(workers int) error {
 
 	db.stopCompactions()

@@ -64,7 +64,13 @@ ZZL写在最前：
   3.所以，SSI (可串行的快照隔离) 比起之前的快照隔离，区别在于：SSI多了检测串行化冲突和决定哪些事务需要回滚的机制。
   详见 https://zhuanlan.zhihu.com/p/395229054
 
-
+(8)GO语言
+  1.<- chan 如果取不出来数据，会把当前执行环境阻塞的
+  2.for range用于 for 循环中迭代数组(array)、切片(slice)、通道(channel)或集合(map)的元素。在数组和切片中它返回元素的索引和索引对应的值，在集合中返回 key-value 对。
+      例如
+      for key, value := range oldMap {
+          newMap[key] = value
+      }
 
 
 # BadgerDB
