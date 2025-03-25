@@ -144,8 +144,8 @@ func DefaultOptions(path string) Options {
 		Dir:      path, //LSM树的存储地址
 		ValueDir: path, //Vlog存储地址
 
-		MemTableSize:        64 << 20, //内存表的尺寸大小 64乘2的20次方（向左移位20次）
-		BaseTableSize:       2 << 20,  //基础表大小
+		MemTableSize:        64 << 20, //内存表的总尺寸大小 64乘2的20次方（向左移位20次）
+		BaseTableSize:       2 << 20,  //SST大小
 		BaseLevelSize:       10 << 20,
 		TableSizeMultiplier: 2,
 		LevelSizeMultiplier: 10, //层间比例

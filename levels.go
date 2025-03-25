@@ -381,7 +381,7 @@ type targets struct {
 // example, when L6 reaches 1.1GB, then L4 target sizes becomes 11MB, thus exceeding the
 // BaseLevelSize of 10MB. L3 would then become the new Lbase, with a target size of 1MB <
 // BaseLevelSize.
-// levelTargets计算LSM树中层级的目标。这个想法来自动态水平尺寸（https://rocksdb.org/blog/2015/07/23/dynamic-level.html）在RocksDB。
+// levelTargets计算LSM树中层级的目标大小。这个想法来自动态水平尺寸（https://rocksdb.org/blog/2015/07/23/dynamic-level.html）在RocksDB。
 // 每一层的大小是基于最低层（通常为L6）的大小动态计算的。所以，如果L6大小为1GB，那么L5目标大小为100MB，L4目标大小为10MB，以此类推。这里的这个大小就是下面的那个BaseLevelSize
 //
 // L0文件不会自动转到L1。相反，它们被压缩到Lbase，其中Lbase是根据从顶部开始的非空的第一层来选择的（检查L1到L6）。
@@ -390,6 +390,7 @@ type targets struct {
 // 当Lbase的目标大小超过BaseLevelSize（可以理解为给该层分配的大小）时，它会被提升到更高的级别。
 // 例如，当L6达到1.1GB时，L4的目标大小变为11MB，从而超过了10MB的BaseLevelSize。L3将成为新的Lbase，目标大小为1MB<BaseLevelSize。
 func (s *levelsController) levelTargets() targets {
+	// 这个函数就是每个层会有一个目标大小，然后还有一个基线层的概念，基线层是倒序找实际大小小于基线层的第一个层级，且该基线层用于当作压缩的目标层来用，即一般尽量去倒序压缩
 	adjust := func(sz int64) int64 {
 		if sz < s.kv.opt.BaseLevelSize {
 			return s.kv.opt.BaseLevelSize
@@ -398,38 +399,42 @@ func (s *levelsController) levelTargets() targets {
 	}
 
 	t := targets{ //先初始化了一个目标数组
-		targetSz: make([]int64, len(s.levels)), //每一层的size多大
-		fileSz:   make([]int64, len(s.levels)), //每一层的文件多大
+		targetSz: make([]int64, len(s.levels)), //每一层的目标大小多大，初始状态下 0层的targetSz为0，其余层均为BaseLevelSize 10 << 20，貌似这两行的大小单位是MB
+		fileSz:   make([]int64, len(s.levels)), //每一层的文件多大，初始状态下 0层的fileSz为MemTableSize 64 << 20，其余层均为2 << 20
 	}
 	// DB size is the size of the last level.
-	dbSize := s.lastLevel().getTotalSize()   //获取第六层的size
+	// 数据库的大小就认为是最底层的大小
+	dbSize := s.lastLevel().getTotalSize()   //获取第六层的实际大小
 	for i := len(s.levels) - 1; i > 0; i-- { //从第六层倒序的遍历每一层
-		ltarget := adjust(dbSize) //得到基准线（BaseLevelSize）与当前层size的较大值
+		ltarget := adjust(dbSize) //得到基线层大小（BaseLevelSize 初始为10485760 即 10 << 20）与当前层size的较大值
 		t.targetSz[i] = ltarget
-		if t.baseLevel == 0 && ltarget <= s.kv.opt.BaseLevelSize { //这个就是层号倒序不断地去试，得到那个想要的层号
+		if t.baseLevel == 0 && ltarget <= s.kv.opt.BaseLevelSize { //这个就是层号倒序不断地去试，得到首个实际大小比预设的基线层大小（BaseLevelSize）小的作为基线层
 			t.baseLevel = i
 		}
 		dbSize /= int64(s.kv.opt.LevelSizeMultiplier) //得到下一层大小，每次折损10倍（badger默认层间比例为10）
 	}
 
-	tsz := s.kv.opt.BaseTableSize
+	tsz := s.kv.opt.BaseTableSize // BaseTableSize默认为2097152 即2 << 20
 	for i := 0; i < len(s.levels); i++ {
 		if i == 0 { //如果是0层，文件大小为配置里面的MemTableSize
 			// Use MemTableSize for Level 0. Because at Level 0, we stop compactions based on the
 			// number of tables, not the size of the level. So, having a 1:1 size ratio between
 			// memtable size and the size of L0 files is better than churning out 32 files per
 			// memtable (assuming 64MB MemTableSize and 2MB BaseTableSize).
+			// 将MemTableSize用于级别0。因为在级别0，我们停止压缩是根据表的数量而不是级别的大小。
+			// 因此，memtable大小和L0文件大小相等比每个内存表产生32个文件要好（假设为64MB MemTableSize和2MB BaseTableSize）。
 			t.fileSz[i] = s.kv.opt.MemTableSize
-		} else if i <= t.baseLevel { // 如果是在目标层之前，文件大小为配置里面的BaseTableSize
+		} else if i <= t.baseLevel { // 如果是在基线层之前，文件大小为配置里面的BaseTableSize
 			t.fileSz[i] = tsz
-		} else { //如果在目标层之后，文件大小为10倍的BaseTableSize
+		} else { //如果在基线层之后，每层为上一层的文件大小的10倍
 			tsz *= int64(s.kv.opt.TableSizeMultiplier)
 			t.fileSz[i] = tsz
 		}
 	}
+	//此时，初始状态下 0层的fileSz为MemTableSize 64 << 20，其余层均为2 << 20
 
 	// Bring the base level down to the last empty level.
-	for i := t.baseLevel + 1; i < len(s.levels)-1; i++ { //做一个边界处理，即目标层之后，找到最大的空层，然后把该层号赋值给baseLevel
+	for i := t.baseLevel + 1; i < len(s.levels)-1; i++ { //做一个边界处理，即基线层之后，找到最大的空层，然后把该层号赋值给baseLevel
 		if s.levels[i].getTotalSize() > 0 {
 			break
 		}
@@ -438,6 +443,7 @@ func (s *levelsController) levelTargets() targets {
 
 	// If the base level is empty and the next level size is less than the
 	// target size, pick the next level as the base level.
+	// 如果基线层为空，且下一级别实际大小小于目标大小，则选择下一级别作为基线层。
 	b := t.baseLevel
 	lvl := s.levels
 	if b < len(lvl)-1 && lvl[b].getTotalSize() == 0 && lvl[b+1].getTotalSize() < t.targetSz[b+1] {
@@ -494,7 +500,6 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 
 	var priosBuffer []compactionPriority //合并优先级数组
 	runOnce := func() bool {
-		// zzlTODO:看到这里了，怎么计算出来的，需要先看那个介绍层级压缩网址，源码分析课件写的东西太少了，这里需要自己看
 		prios := s.pickCompactLevels(priosBuffer) //核心操作，计算出当前的 合并优先级对象 数组
 		defer func() {
 			priosBuffer = prios
@@ -570,8 +575,13 @@ func (s *levelsController) lastLevel() *levelHandler {
 // 基于：https://github.com/facebook/rocksdb/wiki/Leveled-Compaction
 // 它试图重用priosBuffer来减少内存分配，
 // 传递nil是可以接受的，然后将分配新的内存。
+
+// 对于非零层级，分数是层级总大小除以目标大小
+// 对于 0 级，分数是文件总数除以 level0_file_num_compaction_trigger ，或者总大小除以 max_bytes_for_level_base ，取较大者。
+// 我们比较每个层的分数，分数最高的层优先进行压缩。
 func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (prios []compactionPriority) {
-	t := s.levelTargets()
+	t := s.levelTargets() //核心操作，得到基线层序号以及各层的目标大小数组还有各层的文件大小数组// zzlTODO:看到这里了，还需要看这三个数据有啥用
+
 	addPriority := func(level int, score float64) {
 		pri := compactionPriority{
 			level:    level,
@@ -583,17 +593,21 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	}
 
 	// Grow buffer to fit all levels.
+	// 增加缓冲区以适应所有级别。
 	if cap(priosBuffer) < len(s.levels) {
 		priosBuffer = make([]compactionPriority, 0, len(s.levels))
 	}
-	prios = priosBuffer[:0]
+	prios = priosBuffer[:0] // 清空prios
 
 	// Add L0 priority based on the number of tables.
+	// 根据table的数量添加L0的优先级。
 	addPriority(0, float64(s.levels[0].numTables())/float64(s.kv.opt.NumLevelZeroTables))
 
 	// All other levels use size to calculate priority.
+	// 所有其他级别都使用大小来计算优先级。
 	for i := 1; i < len(s.levels); i++ {
 		// Don't consider those tables that are already being compacted right now.
+		// 不要考虑那些现在已经被压缩的table。
 		delSize := s.cstatus.delSize(i)
 
 		l := s.levels[i]
@@ -610,11 +624,17 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	// Overall what this means is, if the bottom level is already overflowing, then de-prioritize
 	// compaction of the above level. If the bottom level is not full, then increase the priority of
 	// above level.
+	// 以下代码借鉴自PebbleDB，可生成更健康的LSM树结构。
+	// 如果Li-1的得分>1.0，则我们将Li-1得分除以Li。
+	// 如果Li得分>=1.0，则Li-1得分降低，这意味着我们将优先压缩较低级别（L5、L4等）而不是较高级别（L0、L1等）。
+	// 另一方面，如果Li得分<1.0，那么我们将提高Li-1的优先级。
+	// 总体而言，这意味着，如果底层已经溢出，则取消对上层压缩的优先级。如果底层未满，则提高上层的优先级。
 	var prevLevel int
 	for level := t.baseLevel; level < len(s.levels); level++ {
 		if prios[prevLevel].adjusted >= 1 {
 			// Avoid absurdly large scores by placing a floor on the score that we'll
 			// adjust a level by. The value of 0.01 was chosen somewhat arbitrarily
+			// 通过在分数上设置一个下限来避免荒谬的高分，我们将根据该下限调整一个级别。0.01的值是任意选择的
 			const minScore = 0.01
 			if prios[level].score >= minScore {
 				prios[prevLevel].adjusted /= prios[level].adjusted
@@ -629,6 +649,10 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	// We'll still sort them by their adjusted score below. Having both these scores allows us to
 	// make better decisions about compacting L0. If we see a score >= 1.0, we can do L0->L0
 	// compactions. If the adjusted score >= 1.0, then we can do L0->Lbase compactions.
+	// 选择原始分数>=1.0的所有级别，无论其调整后的分数如何。我们仍然会按照下面调整后的分数对他们进行排序。
+	// 拥有这两个分数可以让我们在压缩L0方面做出更好的决定。
+	// 如果我们看到分数>=1.0，我们可以进行L0->L0压缩。
+	// 如果调整后的分数>=1.0，那么我们可以进行L0->Lbase压缩。
 	out := prios[:0]
 	for _, p := range prios[:len(prios)-1] {
 		if p.score >= 1.0 {

@@ -71,6 +71,7 @@ ZZL写在最前：
       for key, value := range oldMap {
           newMap[key] = value
       }
+  3.go的文件大小默认以字节为单位
 
 
 # BadgerDB
