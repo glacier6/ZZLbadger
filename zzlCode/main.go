@@ -52,4 +52,7 @@ func main() {
 	_ = err
 
 	// your code here
+	// if t.baseLevel != 6 {
+	// 	fmt.Print("非第6层了")
+	// }
 }

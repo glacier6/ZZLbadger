@@ -387,10 +387,10 @@ type targets struct {
 // L0文件不会自动转到L1。相反，它们被压缩到Lbase，其中Lbase是根据从顶部开始的非空的第一层来选择的（检查L1到L6）。
 // 对于一个空DB，这将是L6。因此，L0压缩到L6，然后是L5、L4，以此类推。
 //
-// 当Lbase的目标大小超过BaseLevelSize（可以理解为给该层分配的大小）时，它会被提升到更高的级别。
+// 当Lbase的目标大小超过BaseLevelSize时，它会被提升到更高的级别。
 // 例如，当L6达到1.1GB时，L4的目标大小变为11MB，从而超过了10MB的BaseLevelSize。L3将成为新的Lbase，目标大小为1MB<BaseLevelSize。
 func (s *levelsController) levelTargets() targets {
-	// 这个函数就是每个层会有一个目标大小，然后还有一个基线层的概念，基线层是倒序找实际大小小于基线层的第一个层级，且该基线层用于当作压缩的目标层来用，即一般尽量去倒序压缩
+	// NOTE:这个函数就是每个层会有一个目标大小。然后还有一个基线层的概念，基线层就是倒序找 按当前数据规模估算的当前层大小<=层基础大小 的第一个层级，且该基线层用于当作压缩的目标层来用，即一般尽量去倒序压缩
 	adjust := func(sz int64) int64 {
 		if sz < s.kv.opt.BaseLevelSize {
 			return s.kv.opt.BaseLevelSize
@@ -403,12 +403,12 @@ func (s *levelsController) levelTargets() targets {
 		fileSz:   make([]int64, len(s.levels)), //每一层的文件多大，初始状态下 0层的fileSz为MemTableSize 64 << 20，其余层均为2 << 20
 	}
 	// DB size is the size of the last level.
-	// 数据库的大小就认为是最底层的大小
-	dbSize := s.lastLevel().getTotalSize()   //获取第六层的实际大小
-	for i := len(s.levels) - 1; i > 0; i-- { //从第六层倒序的遍历每一层
-		ltarget := adjust(dbSize) //得到基线层大小（BaseLevelSize 初始为10485760 即 10 << 20）与当前层size的较大值
+	// NOTE:数据库的大小就认为是最底层的大小，注意数据库最底层是没有最大上限的，这里只是依据最底层大小得到现在的数据规模（若非要计算上限，貌似也可以计算，就是当基线层为L1时，则L6层的大小为 基础大小 * 10的5次方，约为2000GB）
+	dbSize := s.lastLevel().getTotalSize()   //获取L6的实际大小
+	for i := len(s.levels) - 1; i > 0; i-- { //从L6倒序的遍历每一层
+		ltarget := adjust(dbSize) //得到层基础大小（BaseLevelSize 初始为10485760 即 10 << 20） 与  按现在数据规模当前层size的应分配大小（最底层就是实际大小） 的较大值
 		t.targetSz[i] = ltarget
-		if t.baseLevel == 0 && ltarget <= s.kv.opt.BaseLevelSize { //这个就是层号倒序不断地去试，得到首个实际大小比预设的基线层大小（BaseLevelSize）小的作为基线层
+		if t.baseLevel == 0 && ltarget <= s.kv.opt.BaseLevelSize { //这个就是层号倒序不断地去试，得到首个实际大小比预设的层基础大小（BaseLevelSize）小的作为基线层
 			t.baseLevel = i
 		}
 		dbSize /= int64(s.kv.opt.LevelSizeMultiplier) //得到下一层大小，每次折损10倍（badger默认层间比例为10）
@@ -577,11 +577,10 @@ func (s *levelsController) lastLevel() *levelHandler {
 // 传递nil是可以接受的，然后将分配新的内存。
 
 // 对于非零层级，分数是层级总大小除以目标大小
-// 对于 0 级，分数是文件总数除以 level0_file_num_compaction_trigger ，或者总大小除以 max_bytes_for_level_base ，取较大者。
+// NOTE:对于 L0层，分数是当前table数除以最大table数  ，其他层为当前层实际大小/当前层目标大小。
 // 我们比较每个层的分数，分数最高的层优先进行压缩。
 func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (prios []compactionPriority) {
-	t := s.levelTargets() //核心操作，得到基线层序号以及各层的目标大小数组还有各层的文件大小数组// zzlTODO:看到这里了，还需要看这三个数据有啥用
-
+	t := s.levelTargets() //NOTE:核心操作，得到基线层序号（baseLevel）以及各层在当前数据规模下目标大小数组（targetSz，最小为 层基础大小BaseLevelSize）还有各层的文件大小数组（fileSz）
 	addPriority := func(level int, score float64) {
 		pri := compactionPriority{
 			level:    level,
@@ -600,11 +599,11 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	prios = priosBuffer[:0] // 清空prios
 
 	// Add L0 priority based on the number of tables.
-	// 根据table的数量添加L0的优先级。
+	// L0的优先级按table数量计算出来（即当前0层table数量/0层最大table数量）。
 	addPriority(0, float64(s.levels[0].numTables())/float64(s.kv.opt.NumLevelZeroTables))
 
 	// All other levels use size to calculate priority.
-	// 所有其他级别都使用大小来计算优先级。
+	// 所有其他级别都使用大小来计算优先级（即当前层实际大小/当前层目标大小（用上面levelTargets函数计算得到的targetSz））。
 	for i := 1; i < len(s.levels); i++ {
 		// Don't consider those tables that are already being compacted right now.
 		// 不要考虑那些现在已经被压缩的table。
@@ -615,7 +614,7 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 		addPriority(i, float64(sz)/float64(t.targetSz[i]))
 	}
 	y.AssertTrue(len(prios) == len(s.levels))
-
+	// zzlTODO:看到这里了
 	// The following code is borrowed from PebbleDB and results in healthier LSM tree structure.
 	// If Li-1 has score > 1.0, then we'll divide Li-1 score by Li. If Li score is >= 1.0, then Li-1
 	// score is reduced, which means we'll prioritize the compaction of lower levels (L5, L4 and so
@@ -630,7 +629,7 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	// 另一方面，如果Li得分<1.0，那么我们将提高Li-1的优先级。
 	// 总体而言，这意味着，如果底层已经溢出，则取消对上层压缩的优先级。如果底层未满，则提高上层的优先级。
 	var prevLevel int
-	for level := t.baseLevel; level < len(s.levels); level++ {
+	for level := t.baseLevel; level < len(s.levels); level++ { // 从基线层开始往更底层（数字更高的）遍历
 		if prios[prevLevel].adjusted >= 1 {
 			// Avoid absurdly large scores by placing a floor on the score that we'll
 			// adjust a level by. The value of 0.01 was chosen somewhat arbitrarily
