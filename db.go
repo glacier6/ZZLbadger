@@ -362,7 +362,7 @@ func Open(opt Options) (*DB, error) {
 	if !opt.ReadOnly {
 		// 下面是启动LSM Tree的日志归并的协程
 		db.closers.compactors = z.NewCloser(1)
-		db.lc.startCompact(db.closers.compactors) //核心操作，启动日志合并
+		db.lc.startCompact(db.closers.compactors) //NOTE:核心操作，启动日志合并
 
 		db.closers.memtable = z.NewCloser(1)
 		go func() {

@@ -354,14 +354,17 @@ type levelHandlerRLocked struct{}
 // overlappingTables returns the tables that intersect with key range. Returns a half-interval.
 // This function should already have acquired a read lock, and this is so important the caller must
 // pass an empty parameter declaring such.
+// overlaping tables返回与键范围相交的table。返回一个半区间。
+// 此函数应该已经获取了读取锁，这一点非常重要，调用者必须传递一个声明读取锁的空参数。
 func (s *levelHandler) overlappingTables(_ levelHandlerRLocked, kr keyRange) (int, int) {
 	if len(kr.left) == 0 || len(kr.right) == 0 {
 		return 0, 0
 	}
-	left := sort.Search(len(s.tables), func(i int) bool {
-		return y.CompareKeys(kr.left, s.tables[i].Biggest()) <= 0
+	left := sort.Search(len(s.tables), func(i int) bool { //得到包含有序SST切片中第一个 当前SST最大键 >= 目标范围kr下界 的SST的下标
+		return y.CompareKeys(kr.left, s.tables[i].Biggest()) <= 0 //如果目标范围kr的left小于等于当前遍历SST的最大键
+		// 找各个顺序SST中第一个最大键大于已有范围kr的左边界（即最小）的
 	})
-	right := sort.Search(len(s.tables), func(i int) bool {
+	right := sort.Search(len(s.tables), func(i int) bool { //得到包含有序SST切片中第一个 当前SST最小键 > 目标范围kr下界 的SST的下标
 		return y.CompareKeys(kr.right, s.tables[i].Smallest()) < 0
 	})
 	return left, right

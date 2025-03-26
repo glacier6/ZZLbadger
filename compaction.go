@@ -85,21 +85,24 @@ func (r keyRange) overlapsWith(dst keyRange) bool {
 
 	// [dst.left, dst.right] ... [r.left, r.right]
 	// If my left is greater than dst right, we have no overlap.
+	// 如果我的左边大于dst右边，我们就没有重叠。
 	if y.CompareKeys(r.left, dst.right) > 0 {
 		return false
 	}
 	// [r.left, r.right] ... [dst.left, dst.right]
-	// If my right is less than dst left, we have no overlap.
+	// 如果我的右边小于dst左边，我们就没有重叠。
 	if y.CompareKeys(r.right, dst.left) < 0 {
 		return false
 	}
-	// We have overlap.
+	// We have overlap.我们重叠了
 	return true
 }
 
 // getKeyRange returns the smallest and the biggest in the list of tables.
 // TODO(naman): Write a test for this. The smallest and the biggest should
 // be the smallest of the leftmost table and the biggest of the right most table.
+// getKeyRange返回表列表中最小和最大的值。
+// tables ...*table.Table表示可以接受不定数量的table类型的数据，然后放到tables中
 func getKeyRange(tables ...*table.Table) keyRange {
 	if len(tables) == 0 {
 		return keyRange{}
@@ -183,6 +186,7 @@ type thisAndNextLevelRLocked struct{}
 
 // compareAndAdd will check whether we can run this compactDef. That it doesn't overlap with any
 // other running compaction. If it can be run, it would store this run in the compactStatus state.
+// compareAndAdd将检查我们是否可以运行此compactDef。它不会与任何其他正在执行的合并重叠。如果可以运行，它将以compactStatus状态存储此运行。
 func (cs *compactStatus) compareAndAdd(_ thisAndNextLevelRLocked, cd compactDef) bool {
 	cs.Lock()
 	defer cs.Unlock()

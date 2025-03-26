@@ -358,7 +358,7 @@ func (s *levelsController) startCompact(lc *z.Closer) {
 	n := s.kv.opt.NumCompactors // 从配置中拿配置项，默认开4个协程（这个是经过测试的，4个协程进行处理是最好的）
 	lc.AddRunning(n - 1)
 	for i := 0; i < n; i++ {
-		go s.runCompactor(i, lc) //核心操作，开启压缩器协程
+		go s.runCompactor(i, lc) //NOTE:核心操作，开启压缩器协程
 	}
 }
 
@@ -391,6 +391,7 @@ type targets struct {
 // 例如，当L6达到1.1GB时，L4的目标大小变为11MB，从而超过了10MB的BaseLevelSize。L3将成为新的Lbase，目标大小为1MB<BaseLevelSize。
 func (s *levelsController) levelTargets() targets {
 	// NOTE:这个函数就是每个层会有一个目标大小。然后还有一个基线层的概念，基线层就是倒序找 按当前数据规模估算的当前层大小<=层基础大小 的第一个层级，且该基线层用于当作压缩的目标层来用，即一般尽量去倒序压缩
+	// 注意并不是得到合并到哪个目标层
 	adjust := func(sz int64) int64 {
 		if sz < s.kv.opt.BaseLevelSize {
 			return s.kv.opt.BaseLevelSize
@@ -486,7 +487,7 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 
 	// 这个函数是合并的基本函数，其在跳层合并以及普通合并中都会用到，p里面存着从哪压缩到哪
 	run := func(p compactionPriority) bool {
-		err := s.doCompact(id, p) // 核心操作，执行压缩器
+		err := s.doCompact(id, p) // NOTE:核心操作，执行压缩器
 		switch err {
 		case nil:
 			return true
@@ -500,22 +501,22 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 
 	var priosBuffer []compactionPriority //合并优先级数组
 	runOnce := func() bool {
-		prios := s.pickCompactLevels(priosBuffer) //核心操作，计算出当前的 合并优先级对象 数组
+		prios := s.pickCompactLevels(priosBuffer) //NOTE: 核心操作，计算出当前的 待压缩层 切片，里面包含哪些层目前需要压缩，且按优先级（adjusted）顺序排序
 		defer func() {
 			priosBuffer = prios
 		}()
 		if id == 0 {
-			// 只让0号协程压缩L0层
+			// 0号协程对压缩L0层进行特殊操作，只让0号协程处理L0层
 			prios = moveL0toFront(prios)
 		}
-		for _, p := range prios { //遍历这个切片，并取出来每层对应的优先级对象 p
+		for _, p := range prios { //遍历这个待压缩层切片（这个切片已经按照调整分数adjusted大小排过序了），并取出来每层对应的优先级对象 p
 			if id == 0 && p.level == 0 {
 				// Allow worker zero to run level 0, irrespective of its adjusted score.
 				// 让0号协程去处理L0层，不用管调整后的分数（优先级）是如何的
-			} else if p.adjusted < 1.0 {
+			} else if p.adjusted < 1.0 { //如果调整分数小于1，这里也不压缩了
 				break
 			}
-			if run(p) {
+			if run(p) { //已得到需要合并的层级，跳到合并执行函数
 				return true
 			}
 		}
@@ -531,7 +532,7 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 		run(p)
 
 	}
-	count := 0                                      // 专用于2号合并器的跳层合并的计数器，达到200执行跳层合并
+	count := 0                                      // 专用于2号合并协程的计数器，达到200执行tryLmaxToLmaxCompaction
 	ticker := time.NewTicker(50 * time.Millisecond) //创建一个50ms的时钟
 	defer ticker.Stop()
 	for { //无限循环
@@ -540,7 +541,7 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 		case <-ticker.C: //每50ms执行一次合并 ，上面那几个闭包函数合并时在时间上一般的执行顺序（需要看的顺序）为runOnce（），moveL0toFront（），run（），tryLmaxToLmaxCompaction（）
 			count++
 			// Each ticker is 50ms so 50*200=10seconds.
-			if s.kv.opt.LmaxCompaction && id == 2 && count >= 200 { // 注意只有2号协程才会执行跳层合并的操作，且每10秒才会执行一次这个操作
+			if s.kv.opt.LmaxCompaction && id == 2 && count >= 200 { // 注意只有2号协程才会执行跳层合并的操作，且每10秒才会执行一次这个操作 zzlTODO:不是吧？貌似所有都可以处理L0到基线层的处理，这个tryLmaxToLmaxCompaction函数还需要再看
 				tryLmaxToLmaxCompaction() // 这里做的是那个为了减少写放大以及空间放大，进行跳层合并
 				// 即如果数据库为空的时候，会从0-6依次进行合并，那么L0层的数据可能会合并6次到6层，而这个跳层合并就解决了这个问题，从L0层直接倒序合并，先与Lbase合并
 				// Lbase是根据从顶部开始的非空的第一层来选择的（检查L1到L6），即若是全空的话会先与最底层L6合并
@@ -577,8 +578,9 @@ func (s *levelsController) lastLevel() *levelHandler {
 // 传递nil是可以接受的，然后将分配新的内存。
 
 // 对于非零层级，分数是层级总大小除以目标大小
-// NOTE:对于 L0层，分数是当前table数除以最大table数  ，其他层为当前层实际大小/当前层目标大小。
+// NOTE:原始分数的计算方式为，对于 L0层，分数是当前table数除以最大table数  ，其他层为当前层实际大小/当前层目标大小。
 // 我们比较每个层的分数，分数最高的层优先进行压缩。
+// NOTE:注意该函数是按原始分数>=1.0来判断要选哪些层进行压缩，而用调整分数大小来排序上一步得的需要压缩的层（但是在该函数调用的地方，还会对adjusted<1的筛选）
 func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (prios []compactionPriority) {
 	t := s.levelTargets() //NOTE:核心操作，得到基线层序号（baseLevel）以及各层在当前数据规模下目标大小数组（targetSz，最小为 层基础大小BaseLevelSize）还有各层的文件大小数组（fileSz）
 	addPriority := func(level int, score float64) {
@@ -614,7 +616,6 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 		addPriority(i, float64(sz)/float64(t.targetSz[i]))
 	}
 	y.AssertTrue(len(prios) == len(s.levels))
-	// zzlTODO:看到这里了
 	// The following code is borrowed from PebbleDB and results in healthier LSM tree structure.
 	// If Li-1 has score > 1.0, then we'll divide Li-1 score by Li. If Li score is >= 1.0, then Li-1
 	// score is reduced, which means we'll prioritize the compaction of lower levels (L5, L4 and so
@@ -627,16 +628,16 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	// 如果Li-1的得分>1.0，则我们将Li-1得分除以Li。
 	// 如果Li得分>=1.0，则Li-1得分降低，这意味着我们将优先压缩较低级别（L5、L4等）而不是较高级别（L0、L1等）。
 	// 另一方面，如果Li得分<1.0，那么我们将提高Li-1的优先级。
-	// 总体而言，这意味着，如果底层已经溢出，则取消对上层压缩的优先级。如果底层未满，则提高上层的优先级。
+	// NOTE:总体而言，这意味着，如果底层已经溢出，则取消对上层压缩的优先级。如果底层未满，则提高上层的优先级。
 	var prevLevel int
-	for level := t.baseLevel; level < len(s.levels); level++ { // 从基线层开始往更底层（数字更高的）遍历
-		if prios[prevLevel].adjusted >= 1 {
+	for level := t.baseLevel; level < len(s.levels); level++ { // 从基线层开始往更底层遍历，level指当前层，
+		if prios[prevLevel].adjusted >= 1 { //如果高一层的调整分数>=1，即溢出了
 			// Avoid absurdly large scores by placing a floor on the score that we'll
 			// adjust a level by. The value of 0.01 was chosen somewhat arbitrarily
 			// 通过在分数上设置一个下限来避免荒谬的高分，我们将根据该下限调整一个级别。0.01的值是任意选择的
 			const minScore = 0.01
 			if prios[level].score >= minScore {
-				prios[prevLevel].adjusted /= prios[level].adjusted
+				prios[prevLevel].adjusted /= prios[level].adjusted //即若当前层溢出（>1），则该层的高一层调整分数就会变小，而如果当前层未溢出（<1），则该层的高一层调整分数就会放大，与前面的理念相符合
 			} else {
 				prios[prevLevel].adjusted /= minScore
 			}
@@ -661,6 +662,7 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 	prios = out
 
 	// Sort by the adjusted score.
+	// 按调整分数排序
 	sort.Slice(prios, func(i, j int) bool {
 		return prios[i].adjusted > prios[j].adjusted
 	})
@@ -1091,8 +1093,8 @@ type compactDef struct {
 	compactorId int
 	t           targets
 	p           compactionPriority
-	thisLevel   *levelHandler
-	nextLevel   *levelHandler
+	thisLevel   *levelHandler //溢出层（当前层）
+	nextLevel   *levelHandler //目标层
 
 	top []*table.Table
 	bot []*table.Table
@@ -1107,8 +1109,9 @@ type compactDef struct {
 }
 
 // addSplits can allow us to run multiple sub-compactions in parallel across the split key ranges.
+// addSplits允许我们在分割键范围内并行运行多个子压缩。
 func (s *levelsController) addSplits(cd *compactDef) {
-	cd.splits = cd.splits[:0]
+	cd.splits = cd.splits[:0] //清空
 
 	// Let's say we have 10 tables in cd.bot and min width = 3. Then, we'll pick
 	// 0, 1, 2 (pick), 3, 4, 5 (pick), 6, 7, 8 (pick), 9 (pick, because last table).
@@ -1116,6 +1119,10 @@ func (s *levelsController) addSplits(cd *compactDef) {
 	// In an edge case, 142 tables in bottom led to 48 splits. That's too many splits, because it
 	// then uses up a lot of memory for table builder.
 	// We should keep it so we have at max 5 splits.
+	// 假设我们在cd.bot中有10个表，最小宽度=3。然后，我们将选择0、1、2（选择）、3、4、5（选择），6、7、8（选择）和9（选择，因为最后一张桌子）。
+	// 这给了我们10张表的4个选择。
+	// 在边缘案例中，底部的142张桌子导致了48次拆分。这是太多的拆分，因为它会占用表生成器的大量内存。
+	// 我们应该保持它，这样我们最多可以分5盘。
 	width := int(math.Ceil(float64(len(cd.bot)) / 5.0))
 	if width < 3 {
 		width = 3
@@ -1240,14 +1247,16 @@ func (s *levelsController) fillTablesL0ToLbase(cd *compactDef) bool {
 	}
 	// We keep cd.p.adjusted > 0.0 here to allow functions in db.go to artificially trigger
 	// L0->Lbase compactions. Those functions wouldn't be setting the adjusted score.
+	// 我们在这里保持cd.p.adjusted>0.0，以允许db.go中的函数人为触发L0->Lbase压缩。这些函数不会设置调整后的分数。
 	if cd.p.adjusted > 0.0 && cd.p.adjusted < 1.0 {
 		// Do not compact to Lbase if adjusted score is less than 1.0.
+		// 如果调整后的分数小于1.0，则不要压缩到Lbase。
 		return false
 	}
 	cd.lockLevels()
 	defer cd.unlockLevels()
 
-	top := cd.thisLevel.tables
+	top := cd.thisLevel.tables //得到溢出层（高层）包含的tables信息
 	if len(top) == 0 {
 		return false
 	}
@@ -1256,39 +1265,48 @@ func (s *levelsController) fillTablesL0ToLbase(cd *compactDef) bool {
 	if len(cd.dropPrefixes) > 0 {
 		// Use all tables if drop prefix is set. We don't want to compact only a
 		// sub-range. We want to compact all the tables.
+		// 如果设置了删除前缀，则使用所有表。我们不想只压缩一个子范围。我们想压缩所有的table。
 		out = top
 
 	} else {
 		var kr keyRange
 		// cd.top[0] is the oldest file. So we start from the oldest file first.
-		for _, t := range top { //计算哪些SST区间是重叠的
-			dkr := getKeyRange(t)
-			if kr.overlapsWith(dkr) {
-				out = append(out, t)
-				kr.extend(dkr)
+		// cd.top[0]是最旧的文件。所以我们先从最旧的文件开始。
+		// 注意下面这个循环貌似并不是能严格的完全的计算出来L0层哪些SST区间是重叠的
+		// 因为比如如果第一个与第二个SST不重叠，第二个SST的范围信息就会丢失 （zzlTODO:或许因为BadgerDB的SST的某种特性，是可以完全计算的吗？）
+		for _, t := range top { //计算L0层哪些SST区间是重叠的
+			dkr := getKeyRange(t)     //得到当前SST的区间范围
+			if kr.overlapsWith(dkr) { //判断累计范围kr与当前SST范围dkr是否重叠（注意如果累计范围kr为空，那就默认是重叠的）
+				// 如果重叠
+				out = append(out, t) // 累计重叠
+				kr.extend(dkr)       // 扩充重叠的SST的范围
 			} else {
+				// 不重叠
 				break
 			}
 		}
 	}
-	cd.thisRange = getKeyRange(out...)
-	cd.top = out
+	cd.thisRange = getKeyRange(out...) //得到当前层的总范围
+	cd.top = out                       //得到当前层重叠的SST
 
+	//注意目标层的table的key范围就是有序的了！！所以下面这一行就是得到目标层SST切片与当前层总范围重叠的开始下标以及结束下标
 	left, right := cd.nextLevel.overlappingTables(levelHandlerRLocked{}, cd.thisRange)
 	cd.bot = make([]*table.Table, right-left)
-	copy(cd.bot, cd.nextLevel.tables[left:right])
+	copy(cd.bot, cd.nextLevel.tables[left:right]) //将目标层重叠的SST切出来作为bot
 
 	if len(cd.bot) == 0 {
+		//如果完全无重叠
 		cd.nextRange = cd.thisRange
 	} else {
+		//有重叠，目标层的范围取重叠范围
 		cd.nextRange = getKeyRange(cd.bot...)
 	}
-	return s.cstatus.compareAndAdd(thisAndNextLevelRLocked{}, *cd) //compareAndAdd这个函数记录全局的合并状态
+	return s.cstatus.compareAndAdd(thisAndNextLevelRLocked{}, *cd) //compareAndAdd这个函数记录全局的合并状态，会返回是否可以执行此合并任务
 }
 
 // fillTablesL0 would try to fill tables from L0 to be compacted with Lbase. If
 // it can not do that, it would try to compact tables from L0 -> L0.
-//
+
 // Say L0 has 10 tables.
 // fillTablesL0ToLbase picks up 5 tables to compact from L0 -> L5.
 // Next call to fillTablesL0 would run L0ToLbase again, which fails this time.
@@ -1296,11 +1314,17 @@ func (s *levelsController) fillTablesL0ToLbase(cd *compactDef) bool {
 // be compacted within L0. Additionally, it would set the compaction range in
 // cstatus to inf, so no other L0 -> Lbase compactions can happen.
 // Thus, L0 -> L0 must finish for the next L0 -> Lbase to begin.
+// fillTablesL0将尝试用Lbase填充L0中的表格。如果不能做到这一点，它将尝试从L0->L0压缩表。
+// 假设L0有10个表。illTablesL0ToBase从L0->L5中选取5个表进行压缩。
+// 下一次调用fillTablesL0将再次运行L0ToBase，这次失败。
+// 所以，我们转而运行fillTablesL0ToL0，它会拾取L0中要压缩的5个表的其余部分。此外，它将cstatus中的压缩范围设置为inf，因此不会发生其他L0->Lbase压缩。
+// 因此，L0->L0必须完成，才能开始下一个L0->Lbase。
 func (s *levelsController) fillTablesL0(cd *compactDef) bool {
-	if ok := s.fillTablesL0ToLbase(cd); ok {
+	if ok := s.fillTablesL0ToLbase(cd); ok { // NOTE:核心操作，判断是否可以执行L0与基线层的合并，并且会更新CD的诸多状态
+		// 更新的包括（nextRange 目标层的范围取重叠范围，thisRange 当前层的总范围，top 当前层重叠的SST，bot 目标层与thisRange重叠的SST）
 		return true
 	}
-	return s.fillTablesL0ToL0(cd) //当L0ToLbase没有可以合并时，则L0ToL0合并，其为了处理瞬间写到L0的数据很大
+	return s.fillTablesL0ToL0(cd) //NOTE:核心操作，当L0ToLbase没有可以合并时，则L0ToL0合并，其为了处理瞬间写到L0的数据很大 // zzlTODO:看到这里了！
 }
 
 // sortByStaleData sorts tables based on the amount of stale data they have.
@@ -1464,13 +1488,13 @@ func (s *levelsController) fillTables(cd *compactDef) bool {
 	return false
 }
 
-func (s *levelsController) runCompactDef(id, l int, cd compactDef) (err error) { //真正开始做压缩操作
+func (s *levelsController) runCompactDef(id, l int, cd compactDef) (err error) { //真正开始做压缩操作,id是执行本次任务的协程编号，l是溢出层层号，cd是合并任务对象
 	if len(cd.t.fileSz) == 0 {
 		return errors.New("Filesizes cannot be zero. Targets are not set")
 	}
 	timeStart := time.Now()
 
-	thisLevel := cd.thisLevel
+	thisLevel := cd.thisLevel //注意这两个已经不是层号了，是对应的levelHandler
 	nextLevel := cd.nextLevel
 
 	y.AssertTrue(len(cd.splits) == 0)
@@ -1569,45 +1593,46 @@ var errFillTables = stderrors.New("Unable to fill tables")
 // doCompact picks some table on level l and compacts it away to the next level.
 // doCompact在l层拾取一些表并将其压缩到下一层。id是压缩协程的id
 func (s *levelsController) doCompact(id int, p compactionPriority) error {
-	l := p.level                         // l层是当前层
+	l := p.level                         // l层是已溢出要压缩的层
 	y.AssertTrue(l < s.kv.opt.MaxLevels) // Sanity check.
-	if p.t.baseLevel == 0 {
+	if p.t.baseLevel == 0 {              //得到基线层号
 		p.t = s.levelTargets()
 	}
 
 	_, span := otrace.StartSpan(context.Background(), "Badger.Compaction")
 	defer span.End()
 
-	cd := compactDef{ //形成合并任务
-		compactorId:  id, //任务ID
+	cd := compactDef{ //形成合并任务对象
+		compactorId:  id, //完成该任务的协程ID
 		span:         span,
 		p:            p,
-		t:            p.t,
-		thisLevel:    s.levels[l], // 当前层
+		t:            p.t,         // 用于筛选目标层
+		thisLevel:    s.levels[l], // 当前层（溢出层）
 		dropPrefixes: p.dropPrefixes,
 	}
 
 	// While picking tables to be compacted, both levels' tables are expected to
 	// remain unchanged.
-	if l == 0 {
+	// 在选择要压缩的表时，两个级别的表预计将保持不变。
+	if l == 0 { //如果溢出的是L0层，选基线层作为合并的目标层
 		cd.nextLevel = s.levels[p.t.baseLevel]
-		if !s.fillTablesL0(&cd) { //填充L0层（为什么TODO:）
+		if !s.fillTablesL0(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数
 			return errFillTables
 		}
-	} else {
+	} else { //如果溢出的是非0层，最后一层选择自身作为目标层，其余层选择比溢出层低一层的层级作为目标层
 		cd.nextLevel = cd.thisLevel
 		// We're not compacting the last level so pick the next level.
 		if !cd.thisLevel.isLastLevel() {
 			cd.nextLevel = s.levels[l+1]
 		}
-		if !s.fillTables(&cd) {
+		if !s.fillTables(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数
 			return errFillTables
 		}
 	}
 	defer s.cstatus.delete(cd) // Remove the ranges from compaction status.
 
 	span.Annotatef(nil, "Compaction: %+v", cd)
-	if err := s.runCompactDef(id, l, cd); err != nil {
+	if err := s.runCompactDef(id, l, cd); err != nil { // NOTE:核心操作，真正开始执行压缩的函数
 		// This compaction couldn't be done successfully.
 		s.kv.opt.Warningf("[Compactor: %d] LOG Compact FAILED with error: %+v: %+v", id, err, cd)
 		return err
