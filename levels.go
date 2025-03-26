@@ -1187,7 +1187,7 @@ func (s *levelsController) fillTablesL0ToL0(cd *compactDef) bool {
 	// the read lock twice, because it can result in a deadlock. So, we don't
 	// call compactDef.lockLevels, instead locking the level only once and
 	// directly here.
-	//
+
 	// As per godocs on RWMutex:
 	// If a goroutine holds a RWMutex for reading and another goroutine might
 	// call Lock, no goroutine should expect to be able to acquire a read lock
@@ -1195,6 +1195,10 @@ func (s *levelsController) fillTablesL0ToL0(cd *compactDef) bool {
 	// recursive read locking. This is to ensure that the lock eventually
 	// becomes available; a blocked Lock call excludes new readers from
 	// acquiring the lock.
+	// 因为这个级别和下一个级别都是级别0，所以我们不应该两次获取读取锁，因为这可能会导致死锁。因此，我们不调用compactDef.lockLevels，而是在这里直接锁定一次级别。
+	// 根据RWMutex上的godocs：
+	// 如果一个goroutine持有RWMutex进行读取，而另一个gorutine可能会调用Lock，那么在初始读取锁被释放之前，任何goroutine都不应该期望能够获取读取锁。
+	// 特别是，这禁止了递归读取锁定。这是为了确保锁最终可用；被阻止的Lock调用会阻止新的读取器获取锁。
 	y.AssertTrue(cd.thisLevel.level == 0)
 	y.AssertTrue(cd.nextLevel.level == 0)
 	s.levels[0].RLock()
@@ -1206,29 +1210,34 @@ func (s *levelsController) fillTablesL0ToL0(cd *compactDef) bool {
 	top := cd.thisLevel.tables
 	var out []*table.Table
 	now := time.Now()
-	for _, t := range top {
-		if t.Size() >= 2*cd.t.fileSz[0] {
+	for _, t := range top { //遍历0层的table，选择需要合并压缩的table并填入到out
+		if t.Size() >= 2*cd.t.fileSz[0] { // 如果当前table的大小大于等于2倍的MemTableSize
 			// This file is already big, don't include it.
+			// 当前table的大小已经足够大了，不包含它
 			continue
 		}
 		if now.Sub(t.CreatedAt) < 10*time.Second {
 			// Just created it 10s ago. Don't pick for compaction.
+			// 10秒前刚刚创建的table。不要选择压缩合并。
 			continue
 		}
-		if _, beingCompacted := s.cstatus.tables[t.ID()]; beingCompacted {
+		if _, beingCompacted := s.cstatus.tables[t.ID()]; beingCompacted { //并发控制
 			continue
 		}
 		out = append(out, t)
 	}
 
-	if len(out) < 4 {
+	if len(out) < 4 { //L0层待合并的满足条件的SST少于4个，就不合并了
 		// If we don't have enough tables to merge in L0, don't do it.
+		// 如果我们没有足够的表在L0中合并，就不要这样做。
 		return false
 	}
 	cd.thisRange = infRange
 	cd.top = out
 
 	// Avoid any other L0 -> Lbase from happening, while this is going on.
+	// 避免发生任何其他L0->Lbase。
+	// 下五行做的是一个并发控制
 	thisLevel := s.cstatus.levels[cd.thisLevel.level]
 	thisLevel.ranges = append(thisLevel.ranges, infRange)
 	for _, t := range out {
@@ -1237,6 +1246,8 @@ func (s *levelsController) fillTablesL0ToL0(cd *compactDef) bool {
 
 	// For L0->L0 compaction, we set the target file size to max, so the output is always one file.
 	// This significantly decreases the L0 table stalls and improves the performance.
+	// 对于L0->L0压缩，我们将目标文件大小设置为最大，因此输出始终是一个文件。
+	// 这大大减少了L0表的停顿，提高了性能。
 	cd.t.fileSz[0] = math.MaxUint32
 	return true
 }
@@ -1320,15 +1331,18 @@ func (s *levelsController) fillTablesL0ToLbase(cd *compactDef) bool {
 // 所以，我们转而运行fillTablesL0ToL0，它会拾取L0中要压缩的5个表的其余部分。此外，它将cstatus中的压缩范围设置为inf，因此不会发生其他L0->Lbase压缩。
 // 因此，L0->L0必须完成，才能开始下一个L0->Lbase。
 func (s *levelsController) fillTablesL0(cd *compactDef) bool {
-	if ok := s.fillTablesL0ToLbase(cd); ok { // NOTE:核心操作，判断是否可以执行L0与基线层的合并，并且会更新CD的诸多状态
-		// 更新的包括（nextRange 目标层的范围取重叠范围，thisRange 当前层的总范围，top 当前层重叠的SST，bot 目标层与thisRange重叠的SST）
+	if ok := s.fillTablesL0ToLbase(cd); ok { // NOTE:核心操作，判断是否可以执行L0与基线层的合并，并且会更新合并任务对象CD的诸多状态
+		// 更新的包括（nextRange 取目标层与当前层重叠的范围（如果无重叠，直接等于thisRange），thisRange 当前层的总范围，top 当前层重叠的SST切片，bot 目标层与thisRange重叠的SST）
 		return true
 	}
-	return s.fillTablesL0ToL0(cd) //NOTE:核心操作，当L0ToLbase没有可以合并时，则L0ToL0合并，其为了处理瞬间写到L0的数据很大 // zzlTODO:看到这里了！
+	return s.fillTablesL0ToL0(cd) //NOTE:核心操作，当L0ToLbase没有可以合并时，则L0ToL0合并，其为了处理瞬间写到L0的数据很大
+	// 这个会更新cd里面的（nextRange 直接置空，thisRange 设为infRange（应该只是为空的且标记inf为true的占位数据），top L0层满足合并条件的SST切片，bot 直接置空）
 }
 
 // sortByStaleData sorts tables based on the amount of stale data they have.
 // This is useful in removing tombstones.
+// sortByStaleData根据表中过时数据的大小对表进行排序。
+// 这在移除墓碑时很有用。
 func (s *levelsController) sortByStaleDataSize(tables []*table.Table, cd *compactDef) {
 	if len(tables) == 0 || cd.nextLevel == nil {
 		return
@@ -1354,11 +1368,13 @@ func (s *levelsController) sortByHeuristic(tables []*table.Table, cd *compactDef
 
 // This function should be called with lock on levels.
 func (s *levelsController) fillMaxLevelTables(tables []*table.Table, cd *compactDef) bool {
+	// 这个函数会遍历最底层的SST，先取出来一个（填充到cd.top里面），判断是否大小满足cd.t.fileSz，不满足就按key顺序依次加，直到满足，再去判断这些SST是否可以合并（有无其他协程冲突）
+	// 如果可以合并，然后把这些当成cd.bot填充进去，并在s.cstatus记录起来，最后返回即可
 	sortedTables := make([]*table.Table, len(tables))
 	copy(sortedTables, tables)
-	s.sortByStaleDataSize(sortedTables, cd)
+	s.sortByStaleDataSize(sortedTables, cd) //按照过时数据的总量来排序
 
-	if len(sortedTables) > 0 && sortedTables[0].StaleDataSize() == 0 {
+	if len(sortedTables) > 0 && sortedTables[0].StaleDataSize() == 0 { //如果没有过时数据
 		// This is a maxLevel to maxLevel compaction and we don't have any stale data.
 		return false
 	}
@@ -1366,12 +1382,13 @@ func (s *levelsController) fillMaxLevelTables(tables []*table.Table, cd *compact
 	collectBotTables := func(t *table.Table, needSz int64) {
 		totalSize := t.Size()
 
-		j := sort.Search(len(tables), func(i int) bool {
+		j := sort.Search(len(tables), func(i int) bool { //得到 第一个当前层所有SST中最小键 >= 当前遍历的SST的最小键 的切片下标
 			return y.CompareKeys(tables[i].Smallest(), t.Smallest()) >= 0
 		})
 		y.AssertTrue(tables[j].ID() == t.ID())
 		j++
 		// Collect tables until we reach the the required size.
+		// 按key排列顺序收集table，直到我们达到所需的大小。
 		for j < len(tables) {
 			newT := tables[j]
 			totalSize += newT.Size()
@@ -1379,7 +1396,7 @@ func (s *levelsController) fillMaxLevelTables(tables []*table.Table, cd *compact
 			if totalSize >= needSz {
 				break
 			}
-			cd.bot = append(cd.bot, newT)
+			cd.bot = append(cd.bot, newT) //目标层待合并
 			cd.nextRange.extend(getKeyRange(newT))
 			j++
 		}
@@ -1388,15 +1405,18 @@ func (s *levelsController) fillMaxLevelTables(tables []*table.Table, cd *compact
 	for _, t := range sortedTables {
 		// If the maxVersion is above the discardTs, we won't clean anything in
 		// the compaction. So skip this table.
+		// 如果maxVersion高于discadTs，我们将不会清理压缩其中的任何内容。所以跳过这张table。
 		if t.MaxVersion() > s.kv.orc.discardAtOrBelow() {
 			continue
 		}
 		if now.Sub(t.CreatedAt) < time.Hour {
 			// Just created it an hour ago. Don't pick for compaction.
+			// 一小时前刚创建的。不要选择压实。
 			continue
 		}
 		// If the stale data size is less than 10 MB, it might not be worth
 		// rewriting the table. Skip it.
+		// 如果过时数据大小小于10MB，则可能不值得重写表。跳过它。
 		if t.StaleDataSize() < 10<<20 {
 			continue
 		}
@@ -1405,25 +1425,30 @@ func (s *levelsController) fillMaxLevelTables(tables []*table.Table, cd *compact
 		cd.thisRange = getKeyRange(t)
 		// Set the next range as the same as the current range. If we don't do
 		// this, we won't be able to run more than one max level compactions.
+		// 将nextRange设置为与thisRange相同。如果我们不这样做，我们将无法运行多个maxLevel压缩。
 		cd.nextRange = cd.thisRange
 		// If we're already compacting this range, don't do anything.
-		if s.cstatus.overlapsWith(cd.thisLevel.level, cd.thisRange) {
+		//如果我们已经在压缩这个范围，什么都不要做。
+		if s.cstatus.overlapsWith(cd.thisLevel.level, cd.thisRange) { //并发控制
 			continue
 		}
 
 		// Found a valid table!
-		cd.top = []*table.Table{t}
+		cd.top = []*table.Table{t} //直接创建一个仅包含该table的切片
 
 		needFileSz := cd.t.fileSz[cd.thisLevel.level]
-		// The table size is what we want so no need to collect more tables.
 		if t.Size() >= needFileSz {
+			// The table size is what we want so no need to collect more tables.
+			// 表大小是我们想要的，所以不需要收集更多的表。
 			break
 		}
 		// TableSize is less than what we want. Collect more tables for compaction.
 		// If the level has multiple small tables, we collect all of them
 		// together to form a bigger table.
+		// TableSize小于我们想要的大小。收集更多table进行压实。
+		// 即如果该级别有多个小表，我们将它们收集在一起形成一个更大的表
 		collectBotTables(t, needFileSz)
-		if !s.cstatus.compareAndAdd(thisAndNextLevelRLocked{}, *cd) {
+		if !s.cstatus.compareAndAdd(thisAndNextLevelRLocked{}, *cd) { //判断当前的合并任务是否允许执行，允许的话就记录当前的压缩任务，并且结束填充cd，否则就再继续找
 			cd.bot = cd.bot[:0]
 			cd.nextRange = keyRange{}
 			continue
@@ -1441,17 +1466,21 @@ func (s *levelsController) fillTables(cd *compactDef) bool {
 	cd.lockLevels()
 	defer cd.unlockLevels()
 
-	tables := make([]*table.Table, len(cd.thisLevel.tables))
+	tables := make([]*table.Table, len(cd.thisLevel.tables)) //该行与之下四行是为了获得当前层的SST切片
 	copy(tables, cd.thisLevel.tables)
 	if len(tables) == 0 {
 		return false
 	}
 	// We're doing a maxLevel to maxLevel compaction. Pick tables based on the stale data size.
-	if cd.thisLevel.isLastLevel() {
-		return s.fillMaxLevelTables(tables, cd)
+	// 我们正在进行maxLevel到maxLevel的压缩。根据过时的数据大小选择表。
+	if cd.thisLevel.isLastLevel() { // 如果正在合并最底层（最底层只能与最底层合并）
+		return s.fillMaxLevelTables(tables, cd) //NOTE:核心操作，对最底层合并任务对象进行特殊的填充，且将当前合并任务记录到s.cstatus，并直接返回
+		// 更新的包括（nextRange bot的总范围，thisRange 应该是top里那单个SST的区间范围，top 首个取得可能待扩充的包含单个SST的切片，bot 对top扩充后的SST切片（内包含>=1个SST））
 	}
+	// zzlTODO:看到这里了
 	// We pick tables, so we compact older tables first. This is similar to
 	// kOldestLargestSeqFirst in RocksDB.
+	// 我们挑选table，所以我们先压缩旧table。这类似于RocksDB中的kOldestLargestSeqFirst。
 	s.sortByHeuristic(tables, cd)
 
 	for _, t := range tables {
@@ -1614,9 +1643,9 @@ func (s *levelsController) doCompact(id int, p compactionPriority) error {
 	// While picking tables to be compacted, both levels' tables are expected to
 	// remain unchanged.
 	// 在选择要压缩的表时，两个级别的表预计将保持不变。
-	if l == 0 { //如果溢出的是L0层，选基线层作为合并的目标层
+	if l == 0 { //如果溢出的是L0层，选基线层作为合并的目标层（或者也可以执行L0 TO L0的L0自身压缩的操作）
 		cd.nextLevel = s.levels[p.t.baseLevel]
-		if !s.fillTablesL0(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数
+		if !s.fillTablesL0(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数，且将当前合并任务记录到s.cstatus
 			return errFillTables
 		}
 	} else { //如果溢出的是非0层，最后一层选择自身作为目标层，其余层选择比溢出层低一层的层级作为目标层
@@ -1625,7 +1654,7 @@ func (s *levelsController) doCompact(id int, p compactionPriority) error {
 		if !cd.thisLevel.isLastLevel() {
 			cd.nextLevel = s.levels[l+1]
 		}
-		if !s.fillTables(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数
+		if !s.fillTables(&cd) { // NOTE:核心操作，填充合并任务对象内的一些参数，且将当前合并任务记录到s.cstatus
 			return errFillTables
 		}
 	}

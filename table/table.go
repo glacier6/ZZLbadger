@@ -676,6 +676,7 @@ func (t *Table) IndexSize() int {
 func (t *Table) Size() int64 { return int64(t.tableSize) }
 
 // StaleDataSize is the amount of stale data (that can be dropped by a compaction )in this SST.
+// StaleDataSize是此SST中的过时数据大小（可以通过压缩删除）。
 func (t *Table) StaleDataSize() uint32 { return t.fetchIndex().StaleDataSize() }
 
 // Smallest is its smallest key, or nil if there are none
