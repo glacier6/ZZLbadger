@@ -115,10 +115,13 @@ func (s *levelHandler) deleteTables(toDel []*table.Table) error {
 
 // replaceTables will replace tables[left:right] with newTables. Note this EXCLUDES tables[right].
 // You must call decr() to delete the old tables _after_ writing the update to the manifest.
+// replaceTables将用 newTables 替换 tables[left:right]。请注意，tables[left:right]是要被删去的旧表。
+// 您必须在将更新写入清单后调用decer（）删除旧表。
 func (s *levelHandler) replaceTables(toDel, toAdd []*table.Table) error {
 	// Need to re-search the range of tables in this level to be replaced as other goroutines might
 	// be changing it as well.  (They can't touch our tables, but if they add/remove other tables,
 	// the indices get shifted around.)
+	// 需要重新搜索此级别中要替换的表的范围，因为其他goroutine也可能对其进行更改。（他们不能碰我们的表，但如果他们添加/删除其他表，索引就会移动。）
 	s.Lock() // We s.Unlock() below.
 
 	toDelMap := make(map[uint64]struct{})

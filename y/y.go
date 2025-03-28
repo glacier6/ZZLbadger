@@ -243,6 +243,9 @@ func (t *Throttle) Done(err error) {
 // Finish waits until all workers have finished working. It would return any error passed by Done.
 // If Finish is called multiple time, it will wait for workers to finish only once(first time).
 // From next calls, it will return same error as found on first call.
+// 等待所有工人完成工作。它将返回Done传递的任何错误。
+// 如果多次调用Finish，它将等待工人只完成一次（第一次）。
+// 在接下来的调用中，它将返回与第一次调用时相同的错误。
 func (t *Throttle) Finish() error {
 	t.once.Do(func() {
 		t.wg.Wait()

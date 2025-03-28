@@ -103,7 +103,7 @@ type Table struct {
 
 	_index *fb.TableIndex // Nil if encryption is enabled. Use fetchIndex to access.
 	_cheap *cheapIndex
-	ref    atomic.Int32 // For file garbage collection
+	ref    atomic.Int32 // For file garbage collection//用于文件垃圾回收
 
 	// The following are initialized once and const.
 	smallest, biggest []byte // Smallest and largest keys (with timestamps).
@@ -162,13 +162,15 @@ func (t *Table) IncrRef() {
 
 // DecrRef decrements the refcount and possibly deletes the table
 // DecrEf递减引用计数，并可能删除表
+// zzlTODO:这里针对的是内存中的吗，压缩结束的时候也会对所有新生成的表执行一次这个
 func (t *Table) DecrRef() error {
 	newRef := t.ref.Add(-1)
 	if newRef == 0 {
 		// We can safely delete this file, because for all the current files, we always have
 		// at least one reference pointing to them.
-
+		//我们可以安全地删除此文件，因为对于所有当前文件，我们总是至少有一个指向它们的引用。
 		// Delete all blocks from the cache.
+		//从缓存中删除所有块。
 		for i := 0; i < t.offsetsLength(); i++ {
 			t.opt.BlockCache.Del(t.blockCacheKey(i))
 		}

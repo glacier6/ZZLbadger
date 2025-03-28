@@ -23,6 +23,7 @@ ZZL写在最前：
   7.TODO: 索引缓存在哪里用的？
   8.TODO: mmap具体如何，何时返回磁盘的？（看ristretto怎么用即可）
   9.TODO: GC按理来说应该是定期会自动检查的（可能在日志合并的时候？），难道是需要自己去手动调RunValueLogGC这个函数吗？
+  10.目前badger主要会有4类压缩，L0->L0,LMAX->LMAX,L0->Lbase(基线层)还有普通的Li-1到Li
 
 (3)一些简称
   lc levercontroler 层级管理器
