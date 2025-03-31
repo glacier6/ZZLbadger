@@ -129,7 +129,7 @@ func (db *DB) openMemTable(fid, flags int) (*memTable, error) {
 		writeAt:  vlogHeaderSize,
 		opt:      db.opt,
 	}
-	lerr := mt.wal.open(filepath, flags, 2*db.opt.MemTableSize) // 当前函数的核心操作，主要是将.mem文件关联为mmap
+	lerr := mt.wal.open(filepath, flags, 2*db.opt.MemTableSize) // NOTE:核心操作，主要是将.mem文件关联为mmap
 	if lerr != z.NewFile && lerr != nil {
 		return nil, y.Wrapf(lerr, "While opening memtable: %s", filepath)
 	}
@@ -197,7 +197,7 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 		// If WAL exceeds opt.ValueLogFileSize, we'll force flush the memTable. See logic in
 		// ensureRoomForWrite.
 		// 如果WAL超过opt.ValueLogFileSize，我们将强制刷新memTable。
-		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil { //写入预写日志（核心操作）
+		if err := mt.wal.writeEntry(mt.buf, entry, mt.opt); err != nil { //NOTE:核心操作，写入预写日志
 			return y.Wrapf(err, "cannot write entry to WAL file")
 		}
 	}
@@ -207,7 +207,7 @@ func (mt *memTable) Put(key []byte, value y.ValueStruct) error {
 	}
 
 	// Write to skiplist and update maxVersion encountered.
-	mt.sl.Put(key, value)                               //这里的SL就是跳表了！！把KV压入跳表（核心操作）
+	mt.sl.Put(key, value)                               //NOTE:核心操作，这里的SL就是跳表了！！把KV压入跳表
 	if ts := y.ParseTs(entry.Key); ts > mt.maxVersion { //更新memtable内存储key的最大版本号
 		mt.maxVersion = ts
 	}
@@ -479,7 +479,7 @@ func (lf *logFile) iterate(readOnly bool, offset uint32, fn logEntry) (uint32, e
 
 loop:
 	for { //遍历KV对
-		e, err := read.Entry(reader) //核心操作，在reader读取器中取出来一个KV对
+		e, err := read.Entry(reader) //NOTE:核心操作，在reader读取器中取出来一个KV对
 		switch {
 		// We have not reached the end of the file but the entry we read is
 		// zero. This happens because we have truncated the file and

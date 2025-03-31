@@ -167,7 +167,7 @@ func (item *Item) yieldItemValue() ([]byte, func(), error) {
 	var vp valuePointer
 	vp.Decode(item.vptr) //解码值指针
 	db := item.txn.db
-	result, cb, err := db.vlog.Read(vp, item.slice) // 核心操作，去磁盘读目标value
+	result, cb, err := db.vlog.Read(vp, item.slice) // NOTE:核心操作，去磁盘读目标value
 	if err != nil {
 		db.opt.Errorf("Unable to read: Key: %v, Version : %v, meta: %v, userMeta: %v"+
 			" Error: %v", key, item.version, item.meta, item.userMeta, err)
@@ -207,7 +207,7 @@ func runCallback(cb func()) {
 }
 
 func (item *Item) prefetchValue() {
-	val, cb, err := item.yieldItemValue() // 核心操作，获取item的value值
+	val, cb, err := item.yieldItemValue() // NOTE:核心操作，获取item的value值
 	defer runCallback(cb)
 
 	item.err = err
@@ -388,7 +388,7 @@ func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 	if len(opt.Prefix) == 0 { //如果无前缀，直接走过滤的闭包函数
 		out := make([]*table.Table, len(all))
 		copy(out, all)
-		return filterTables(out)
+		return filterTables(out) //NOTE:核心操作
 	}
 	sIdx := sort.Search(len(all), func(i int) bool { //sort.Search是Go提供的结构体遍历，找到第一个表的最大值大于或等于prefix的下标并返回
 		// table.Biggest >= opt.prefix
@@ -407,7 +407,7 @@ func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 		})
 		out := make([]*table.Table, len(filtered[:eIdx]))
 		copy(out, filtered[:eIdx])
-		return filterTables(out) //这里的out最终得到的，就是一个数组，其内元素是最大值前len（prefix）位大于或等于prefix且其最小值前len（prefix）大于prefix的SST（因为判断的是前缀，所以有可能是会返回多个SST的）
+		return filterTables(out) //NOTE:核心操作，这里的out最终得到的，就是一个数组，其内元素是最大值前len（prefix）位大于或等于prefix且其最小值前len（prefix）大于prefix的SST（因为判断的是前缀，所以有可能是会返回多个SST的）
 	}
 	// 下面的是前缀直接是完整key的话（用于遍历一个key的所有版本）
 	// opt.prefixIsKey == true. This code is optimizing for opt.prefixIsKey part.
@@ -428,7 +428,7 @@ func (opt *IteratorOptions) pickTables(all []*table.Table) []*table.Table {
 		}
 		out = append(out, t)
 	}
-	return filterTables(out)
+	return filterTables(out) //NOTE:核心操作
 }
 
 // DefaultIteratorOptions contains default options when iterating over Badger key-value stores.
@@ -491,21 +491,21 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	txn.numIterators.Add(1)
 
 	// TODO: If Prefix is set, only pick those memtables which have keys with the prefix.
-	tables, decr := txn.db.getMemTables() // 返回memtable与immemtable的合集
+	tables, decr := txn.db.getMemTables() // NOTE:核心操作，返回memtable与immemtable的合集
 	defer decr()
 	txn.db.vlog.incrIteratorCount()                                   // 内存numActiveIterators，这个数字一旦为0，就可以删除当前vLog对象（就本行的那个vlog）内的ToBeDeleted文件。
 	var iters []y.Iterator                                            //创建迭代器数组
-	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil { //先创建 用于遍历存储当前事务待写入数据的数组的 迭代器
+	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil { //NOTE:核心操作，先创建 用于遍历存储当前事务待写入数据的数组的 迭代器
 		iters = append(iters, itr)
 	}
 	for i := 0; i < len(tables); i++ { //为内存里面的每一个memtable及immemtable的跳表创建一个迭代器
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
 	// lc是层级管理器(levelcontroler)，下面是对每一层创建一个迭代器，并加在iters对象内（注意0层与其他层处理方式不同）
-	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references.
+	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references. NOTE:核心操作
 	res := &Iterator{
 		txn:    txn,
-		iitr:   table.NewMergeIterator(iters, opt.Reverse), // 合并的迭代器（二叉树结构），包含事物的，内存的，外存的（按level展开）
+		iitr:   table.NewMergeIterator(iters, opt.Reverse), // NOTE:核心操作，合并的迭代器（二叉树结构），包含事物的，内存的，外存的（按level展开）
 		opt:    opt,
 		readTs: txn.readTs,
 	}
@@ -607,7 +607,7 @@ func (it *Iterator) Next() {
 	// Set next item to current
 	it.item = it.data.pop()
 	for it.iitr.Valid() && hasPrefix(it) {
-		if it.parseItem() {
+		if it.parseItem() { //NOTE:核心操作
 			// parseItem calls one extra next.
 			// This is used to deal with the complexity of reverse iteration.
 			break
@@ -778,7 +778,7 @@ func (it *Iterator) prefetch() {
 	var count int
 	it.item = nil
 	for i.Valid() && hasPrefix(it) {
-		if !it.parseItem() { //核心操作，对单个KV对进行分析
+		if !it.parseItem() { //NOTE:核心操作，对单个KV对进行分析
 			continue //读出来无效的kv对，如badger的内部KV以及版本不对的，则不计数
 		}
 		count++
@@ -811,7 +811,7 @@ func (it *Iterator) Seek(key []byte) {
 	}
 	if len(key) == 0 {
 		it.iitr.Rewind() //调整迭代器的平衡二叉树，保证range key是从小到大的顺序读取的
-		it.prefetch()    //核心操作，预取操作，真的要读了
+		it.prefetch()    //NOTE:核心操作，预取操作，真的要读了
 		return
 	}
 

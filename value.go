@@ -195,7 +195,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 			vlog.opt.Debugf("Processing entry %d", count)
 		}
 
-		vs, err := vlog.db.get(e.Key) // 从LSM tree里面查当前key的最新版本
+		vs, err := vlog.db.get(e.Key) // NOTE:核心操作，从LSM tree里面查当前key的最新版本
 		if err != nil {
 			return err
 		}
@@ -313,7 +313,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		return nil
 	}
 
-	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error { //核心操作，对Vlog文件内进行迭代，依次对每一个取出来的KV对执行fe闭包函数
+	_, err := f.iterate(vlog.opt.ReadOnly, 0, func(e Entry, vp valuePointer) error { //NOTE:核心操作，对Vlog文件内进行迭代，依次对每一个取出来的KV对执行fe闭包函数
 		return fe(e)
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func (vlog *valueLog) rewrite(f *logFile) error {
 		if end > len(wb) {
 			end = len(wb)
 		}
-		if err := vlog.db.batchSet(wb[i:end]); err != nil { // 伪装成一次批量的写请求，把未处理的处理掉
+		if err := vlog.db.batchSet(wb[i:end]); err != nil { // NOTE:核心操作，伪装成一次批量的写请求，把未处理的处理掉
 			if err == ErrTxnTooBig {
 				// Decrease the batch size to half.
 				batchSize = batchSize / 2
@@ -851,7 +851,7 @@ func (vlog *valueLog) write(reqs []*request) error { //这里面将数据写入�
 		}
 
 		start := int(endOffset - n)
-		y.AssertTrue(copy(curlf.Data[start:], buf.Bytes()) == int(n)) //核心，放入curlf对象内，后续因为是mmap方式再由操作系统放入磁盘即可
+		y.AssertTrue(copy(curlf.Data[start:], buf.Bytes()) == int(n)) //NOTE:核心操作，放入curlf对象内，后续因为是mmap方式再由操作系统放入磁盘即可
 
 		curlf.size.Store(endOffset) //更新偏移位置
 		return nil
@@ -1098,7 +1098,7 @@ func (vlog *valueLog) doRunGC(lf *logFile) error {
 	_, span := otrace.StartSpan(context.Background(), "Badger.GC")
 	span.Annotatef(nil, "GC rewrite for: %v", lf.path)
 	defer span.End()
-	if err := vlog.rewrite(lf); err != nil { //核心操作，对Vlog进行重写
+	if err := vlog.rewrite(lf); err != nil { //NOTE:核心操作，对Vlog进行重写
 		return err
 	}
 	// Remove the file from discardStats.
@@ -1126,11 +1126,11 @@ func (vlog *valueLog) runGC(discardRatio float64) error {
 			<-vlog.garbageCh
 		}()
 
-		lf := vlog.pickLog(discardRatio) // 核心操作，选择一个Vlog文件（这里得到的是Vlog文件的FID，并不是真的Vlog文件，所以全部是在内存操作的）
+		lf := vlog.pickLog(discardRatio) // NOTE:核心操作，选择一个Vlog文件（这里得到的是Vlog文件的FID，并不是真的Vlog文件，所以全部是在内存操作的）
 		if lf == nil {
 			return ErrNoRewrite
 		}
-		return vlog.doRunGC(lf) // 核心操作，对选取到的Vlog文件实际进行GC
+		return vlog.doRunGC(lf) // NOTE:核心操作，对选取到的Vlog文件实际进行GC
 	default:
 		return ErrRejected //GC被拒绝
 	}
@@ -1141,7 +1141,7 @@ func (vlog *valueLog) updateDiscardStats(stats map[uint32]int64) {
 		return
 	}
 	for fid, discard := range stats {
-		vlog.discardStats.Update(fid, discard) //将累计的垃圾数据个数更新到统计表中
+		vlog.discardStats.Update(fid, discard) //NOTE:核心操作，将累计的垃圾数据个数更新到统计表中
 	}
 	// The following is to coordinate with some test cases where we want to
 	// verify that at least one iteration of updateDiscardStats has been completed.

@@ -208,42 +208,46 @@ func (mf *manifestFile) close() error {
 // we replay the MANIFEST file, we'll either replay all the changes or none of them.  (The truth of
 // this depends on the filesystem -- some might append garbage data if a system crash happens at
 // the wrong time.)
+// addChanges以原子方式将一批更改写入文件。“原子性”意味着当我们重放MANIFEST文件时，我们要么重放所有更改，要么不重放任何更改。
+// （这取决于文件系统——如果系统崩溃发生在错误的时间，有些文件系统可能会附加垃圾数据。）
 func (mf *manifestFile) addChanges(changesParam []*pb.ManifestChange) error {
 	if mf.inMemory {
 		return nil
 	}
 	changes := pb.ManifestChangeSet{Changes: changesParam}
-	buf, err := proto.Marshal(&changes)
+	buf, err := proto.Marshal(&changes) //把这个有关改变信息的消息对象编码成二进制格式的字节切片
 	if err != nil {
 		return err
 	}
 
 	// Maybe we could use O_APPEND instead (on certain file systems)
-	mf.appendLock.Lock()
+	mf.appendLock.Lock() //对清单文件加锁
 	defer mf.appendLock.Unlock()
-	if err := applyChangeSet(&mf.manifest, &changes); err != nil {
+	if err := applyChangeSet(&mf.manifest, &changes); err != nil { //NOTE:核心操作，将更改同步到清单文件
 		return err
 	}
 	// Rewrite manifest if it'd shrink by 1/10 and it's big enough to care
+	// 如果清单缩小了1/10，并且足够大，可以重新编写清单
 	if mf.manifest.Deletions > mf.deletionsRewriteThreshold &&
 		mf.manifest.Deletions > manifestDeletionsRatio*(mf.manifest.Creations-mf.manifest.Deletions) {
-		if err := mf.rewrite(); err != nil {
+		if err := mf.rewrite(); err != nil { //重写清单文件
 			return err
 		}
 	} else {
 		var lenCrcBuf [8]byte
 		binary.BigEndian.PutUint32(lenCrcBuf[0:4], uint32(len(buf)))
 		binary.BigEndian.PutUint32(lenCrcBuf[4:8], crc32.Checksum(buf, y.CastagnoliCrcTable))
-		buf = append(lenCrcBuf[:], buf...)
-		if _, err := mf.fp.Write(buf); err != nil {
+		buf = append(lenCrcBuf[:], buf...)          //追加头信息
+		if _, err := mf.fp.Write(buf); err != nil { //将这些改变信息记录到磁盘的清单文件
 			return err
 		}
 	}
 
-	return syncFunc(mf.fp)
+	return syncFunc(mf.fp) //将内存中的文件刷入到磁盘
 }
 
 // this function is saved here to allow injection of fake filesystem latency at test time.
+// 此函数保存在此处，以允许在测试时注入虚假文件系统延迟。
 var syncFunc = func(f *os.File) error { return f.Sync() }
 
 // Has to be 4 bytes.  The value can never change, ever, anyway.
@@ -324,7 +328,7 @@ func (mf *manifestFile) rewrite() error {
 	if err := mf.fp.Close(); err != nil {
 		return err
 	}
-	fp, netCreations, err := helpRewrite(mf.directory, &mf.manifest, mf.externalMagic)
+	fp, netCreations, err := helpRewrite(mf.directory, &mf.manifest, mf.externalMagic) //NOTE:核心操作，重建清单文件
 	if err != nil {
 		return err
 	}
@@ -440,23 +444,24 @@ func ReplayManifestFile(fp *os.File, extMagic uint16) (Manifest, int64, error) {
 	return build, offset, nil
 }
 
+// 执行一次清单文件的改变
 func applyManifestChange(build *Manifest, tc *pb.ManifestChange) error {
 	switch tc.Op {
-	case pb.ManifestChange_CREATE:
-		if _, ok := build.Tables[tc.Id]; ok {
+	case pb.ManifestChange_CREATE: //如果是新增SST的改变
+		if _, ok := build.Tables[tc.Id]; ok { // table的id为键，本行是判断新增SST的是否存在，已存在的话就返回错误
 			return fmt.Errorf("MANIFEST invalid, table %d exists", tc.Id)
 		}
-		build.Tables[tc.Id] = TableManifest{
+		build.Tables[tc.Id] = TableManifest{ //创建清单文件内的SST对象
 			Level:       uint8(tc.Level),
 			KeyID:       tc.KeyId,
 			Compression: options.CompressionType(tc.Compression),
 		}
-		for len(build.Levels) <= int(tc.Level) {
+		for len(build.Levels) <= int(tc.Level) { // 这行可以新增清单文件内的层级结构，一直增加到当前改变的那一个层级
 			build.Levels = append(build.Levels, levelManifest{make(map[uint64]struct{})})
 		}
 		build.Levels[tc.Level].Tables[tc.Id] = struct{}{}
 		build.Creations++
-	case pb.ManifestChange_DELETE:
+	case pb.ManifestChange_DELETE: //如果是删除SST的改变
 		tm, ok := build.Tables[tc.Id]
 		if !ok {
 			return fmt.Errorf("MANIFEST removes non-existing table %d", tc.Id)
@@ -472,8 +477,9 @@ func applyManifestChange(build *Manifest, tc *pb.ManifestChange) error {
 
 // This is not a "recoverable" error -- opening the KV store fails because the MANIFEST file is
 // just plain broken.
+// 这不是一个“可恢复”的错误——打开KV存储失败，因为MANIFEST文件完全损坏了。
 func applyChangeSet(build *Manifest, changeSet *pb.ManifestChangeSet) error {
-	for _, change := range changeSet.Changes {
+	for _, change := range changeSet.Changes { //遍历依次将每个SST的改变同步到清单文件
 		if err := applyManifestChange(build, change); err != nil {
 			return err
 		}

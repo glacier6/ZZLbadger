@@ -255,7 +255,7 @@ func (itr *Iterator) seekToLast() {
 // 下面就是要根据目标块的idx来获取该目标块，并且在该目标块内找到的第一个大于等于目标key的元素放在这个itr迭代器对象内
 func (itr *Iterator) seekHelper(blockIdx int, key []byte) {
 	itr.bpos = blockIdx
-	block, err := itr.t.block(blockIdx, itr.useCache()) //核心代码，拿到目标block块（先看缓存，没有再去外存）
+	block, err := itr.t.block(blockIdx, itr.useCache()) //NOTE:核心操作，拿到目标block块（先看缓存，没有再去外存）
 	if err != nil {
 		itr.err = err
 		return
@@ -263,7 +263,7 @@ func (itr *Iterator) seekHelper(blockIdx int, key []byte) {
 	itr.bi.tableID = itr.t.id //这几行是再itr这个迭代器对象中保存一些现在查询的关键信息
 	itr.bi.blockID = itr.bpos
 	itr.bi.setBlock(block)   // 给迭代器设置迭代的对象块
-	itr.bi.seek(key, origin) // 核心代码，正式开始二分查找block内数据，其会将找到的第一个大于等于目标key的元素放在这个itr迭代器对象内
+	itr.bi.seek(key, origin) // NOTE:核心操作，正式开始二分查找block内数据，其会将找到的第一个大于等于目标key的元素放在这个itr迭代器对象内
 	itr.err = itr.bi.Error()
 }
 
@@ -302,7 +302,7 @@ func (itr *Iterator) seekFrom(key []byte, whence int) {
 	// 有两个情况。
 	//  1）block[idx-1]中的所有内容都严格<目标key。在这种情况下，我们应该取block[idx]的第一个元素
 	//  2）block[idx-1]中的某个元素>=key。我们应该去那个元素。
-	itr.seekHelper(idx-1, key) // 核心代码，去idx-1下标的块内找目标key
+	itr.seekHelper(idx-1, key) // NOTE:核心操作，去idx-1下标的块内找目标key
 	if itr.err == io.EOF {
 		// Case 1. Need to visit block[idx].
 		// 情况1，需要去block[idx]这个块内找
@@ -314,7 +314,7 @@ func (itr *Iterator) seekFrom(key []byte, whence int) {
 		}
 		// Since block[idx].smallest is > key. This is essentially a block[idx].SeekToFirst.
 		// 因为block[idx]最小key >key
-		itr.seekHelper(idx, key) // 核心代码，去idx下标的块内找目标key
+		itr.seekHelper(idx, key) // NOTE:核心操作，去idx下标的块内找目标key
 	}
 	// Case 2: No need to do anything. We already did the seek in block[idx-1].
 	// 情况2：无需采取任何行动。我们已经在块[idx-1]中进行了搜索。

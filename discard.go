@@ -106,7 +106,7 @@ func (lf *discardStats) maxSlot() int {
 func (lf *discardStats) Update(fidu uint32, discard int64) int64 {
 	// 这个函数是更新每个vlog文件的垃圾键值对数量
 	// lf是一个Mmap的文件，discard是新累加的垃圾个数，为-1则代表是对vlog清理了，需要把累加器置为0
-	// 而discard的个数是在LSM树compaction操作时顺带计数的
+	// 而discard的个数是在LSM树合并操作时顺带计数的
 	fid := uint64(fidu)
 	lf.Lock()
 	defer lf.Unlock()
@@ -157,12 +157,13 @@ func (lf *discardStats) Iterate(f func(fid, stats uint64)) {
 }
 
 // MaxDiscard returns the file id with maximum discard bytes.
+// MaxDiscard返回具有最大丢弃字节数的文件id。
 func (lf *discardStats) MaxDiscard() (uint32, int64) {
 	lf.Lock()
 	defer lf.Unlock()
 
 	var maxFid, maxVal uint64
-	lf.Iterate(func(fid, val uint64) { // 这个val可以理解为脏键数
+	lf.Iterate(func(fid, val uint64) { // 这个val可以理解为脏键总大小
 		if maxVal < val {
 			maxVal = val
 			maxFid = fid

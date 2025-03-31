@@ -32,7 +32,7 @@ func main() {
 	err = db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.PrefetchSize = 10      //指定预读取的kv对个数
-		it := txn.NewIterator(opts) //核心代码，这个顶级迭代器屏蔽了数据可能在内存，也可能在外存，也可能在事务中，统一进行遍历
+		it := txn.NewIterator(opts) //NOTE:核心操作，这个顶级迭代器屏蔽了数据可能在内存，也可能在外存，也可能在事务中，统一进行遍历
 		defer it.Close()
 		for it.Rewind(); it.Valid(); it.Next() { // Rewind把指针指向遍历的初始位置以及一些初始操作（核心函数），Valid判断当前kv是否有效，Next将指针指向下一个kv
 			item := it.Item() // 取出当前遍历器指向的kv

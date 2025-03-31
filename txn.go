@@ -96,7 +96,7 @@ func (o *oracle) readTs() uint64 { // 利用时间辍作事务的版本号
 		panic("ReadTs should not be retrieved for managed DB")
 	}
 
-	var readTs uint64 // TODO:readTs 是时间戳，但是注意不是物理时间戳，是逻辑上的版本号
+	var readTs uint64 // readTs 是时间戳，但是注意不是物理时间戳，是逻辑上的版本号
 	o.Lock()          //获取版本号需要加锁
 	readTs = o.nextTxnTs - 1
 	o.readMark.Begin(readTs) // 标记当前事务已经进入开始读的阶段
@@ -479,7 +479,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 	// 如果是读写事务
 	if txn.update {
 		if e, has := txn.pendingWrites[string(key)]; has && bytes.Equal(key, e.Key) { // 则判断当前key是否在pendingWrites（就是判断是否是当前事务之前提交过的数据），如果在，下面就直接拼装返回
-			if isDeletedOrExpired(e.meta, e.ExpiresAt) { // 在，且没有过期就开始拼装返回
+			if isDeletedOrExpired(e.meta, e.ExpiresAt) { // 在pendingWrites，且没有过期就开始拼装返回
 				return nil, ErrKeyNotFound
 			}
 			// Fulfill from cache.
@@ -500,7 +500,7 @@ func (txn *Txn) Get(key []byte) (item *Item, rerr error) {
 
 	//下面就是没在当前事务历史操作内直接找到，去LSM TREE取相应的key了
 	seek := y.KeyWithTs(key, txn.readTs) // key后拼接读取时间戳（亦指事务的开始时间戳）
-	vs, err := txn.db.get(seek)          // 核心操作，去找结果了
+	vs, err := txn.db.get(seek)          // NOTE:核心操作，去找结果了
 	if err != nil {
 		return nil, y.Wrapf(err, "DB::Get key: %q", key)
 	}
@@ -564,7 +564,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 	orc.writeChLock.Lock()
 	defer orc.writeChLock.Unlock()
 
-	commitTs, conflict := orc.newCommitTs(txn) //让orc进行冲突检测和过期事务清理，如果无冲突，获取授时 commitTs，并将当前事务添加到 commitedTxns
+	commitTs, conflict := orc.newCommitTs(txn) //NOTE:核心操作，让orc进行冲突检测和过期事务清理，如果无冲突，获取授时 commitTs，并将当前事务添加到 commitedTxns
 	if conflict {
 		return nil, ErrConflict //有冲突，返回错误（貌似是一路返回到客户端，并不做纠错处理？）
 	}
@@ -630,7 +630,7 @@ func (txn *Txn) commitAndSend() (func() error, error) {
 		entries = append(entries, e)
 	}
 	// entries 是pendingWrites与duplicateWrites两个缓冲区经过处理（如为key绑定commitTs）后的合并体
-	req, err := txn.db.sendToWriteCh(entries) //进行落盘操作，req是返回的回调函数
+	req, err := txn.db.sendToWriteCh(entries) //NOTE:核心操作，进行落盘操作，req是返回的回调函数
 	if err != nil {                           //报错了
 		orc.doneCommit(commitTs) //告诉orc当前commitTs已经提交完成，让其更新水位信息，即移动 txnMark 的点位。且诺有等待的新事务请求readTs则其会通知其的WaitForMark函数
 		return nil, err
@@ -710,7 +710,7 @@ func (txn *Txn) Commit() error {
 	}
 	defer txn.Discard() //这个函数可以反复调用
 
-	txnCb, err := txn.commitAndSend() //核心操作，提交到orical对象（orc）里，告知事务时间戳已经提交了，你需要更新水位线，使比当前水位线小的事务往下执行（保证事务的一致性）
+	txnCb, err := txn.commitAndSend() //NOTE:核心操作，提交到orical对象（orc）里，告知事务时间戳已经提交了，你需要更新水位线，使比当前水位线小的事务往下执行（保证事务的一致性）
 	if err != nil {
 		return err
 	}
@@ -829,7 +829,7 @@ func (db *DB) newTransaction(update, isManaged bool) *Txn {
 		txn.pendingWrites = make(map[string]*Entry) //所有当前事务写入的操作在这里记录
 	}
 	if !isManaged {
-		txn.readTs = db.orc.readTs() //为当前新增的事务授时，即记录开始时间戳，因为常用于读取数据，所以也叫读取时间戳（直接复制来自 oracle 对象的 nextTxnTs 字段中记录的当前时间戳即可。）
+		txn.readTs = db.orc.readTs() //NOTE:核心操作,为当前新增的事务授时，即记录开始时间戳，因为常用于读取数据，所以也叫读取时间戳（直接复制来自 oracle 对象的 nextTxnTs 字段中记录的当前时间戳即可。）
 	}
 	return txn
 }
@@ -843,7 +843,7 @@ func (db *DB) View(fn func(txn *Txn) error) error { //处理只读事务，只�
 	}
 	var txn *Txn
 	if db.opt.managedTxns {
-		txn = db.NewTransactionAt(math.MaxUint64, false) // NewTransactionAt函数用于创建事务
+		txn = db.NewTransactionAt(math.MaxUint64, false) // NOTE:核心操作，NewTransactionAt与NewTransaction函数用于创建事务
 	} else {
 		txn = db.NewTransaction(false)
 	}
@@ -862,12 +862,12 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 	if db.opt.managedTxns {
 		panic("Update can only be used with managedDB=false.")
 	}
-	txn := db.NewTransaction(true) //创建一个事物对象
+	txn := db.NewTransaction(true) //NOTE:核心操作，创建一个事物对象
 	defer txn.Discard()            //等运行结束时，关闭事务
 
 	if err := fn(txn); err != nil { //执行传入的函数体
 		return err
 	}
 
-	return txn.Commit() //进行提交（注意是在提交的时候才会进行写入操作）
+	return txn.Commit() //NOTE:核心操作，进行提交（注意是在提交的时候才会进行写入操作）
 }

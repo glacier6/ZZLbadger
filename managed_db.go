@@ -35,7 +35,7 @@ func (db *DB) NewTransactionAt(readTs uint64, update bool) *Txn {
 	if !db.opt.managedTxns {
 		panic("Cannot use NewTransactionAt with managedDB=false. Use NewTransaction instead.")
 	}
-	txn := db.newTransaction(update, true)
+	txn := db.newTransaction(update, true) // NOTE:核心操作
 	txn.readTs = readTs
 	return txn
 }

@@ -898,7 +898,7 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 			// Can't return from here, until I decrRef all the tables that I built so far.
 			break
 		}
-		go func(builder *table.Builder, fileID uint64) { //这个协程控制将buffer刷盘到磁盘
+		go func(builder *table.Builder, fileID uint64) { //这个协程控制将buffer刷盘到磁盘，按块刷新
 			var err error
 			defer inflightBuilders.Done(err)
 			defer builder.Close()
@@ -924,7 +924,7 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 
 // compactBuildTables merges topTables and botTables to form a list of new tables.
 // compactBuildTables合并topTables和botTables以形成新表列表。
-func (s *levelsController) compactBuildTables( // 进行压缩，并得到两层间合并后的新tables
+func (s *levelsController) compactBuildTables( // 进行压缩，并得到两层间合并后的新tables（应该是只包含会受影响的SST，而不会把目标层的所有SST都在其中）
 	lev int, cd compactDef) ([]*table.Table, func() error, error) {
 	// lev是当前层的层号
 	topTables := cd.top
@@ -1032,6 +1032,7 @@ func buildChangeSet(cd *compactDef, newTables []*table.Table) pb.ManifestChangeS
 	for _, table := range newTables {
 		changes = append(changes,
 			newCreateChange(table.ID(), cd.nextLevel.level, table.KeyID(), table.CompressionType()))
+		// KeyID貌似是压缩的密钥，而不是具体某个kv对的k
 	}
 	for _, table := range cd.top {
 		// Add a delete change only if the table is not in memory.
@@ -1549,7 +1550,7 @@ func (s *levelsController) runCompactDef(id, l int, cd compactDef) (err error) {
 	//表永远不应该在级别之间直接移动，
 	//始终重写以允许丢弃无效版本。
 
-	newTables, decr, err := s.compactBuildTables(l, cd) //NOTE:核心操作，进行压缩（已经写到磁盘了），并得到两层间合并后的新tables
+	newTables, decr, err := s.compactBuildTables(l, cd) //NOTE:核心操作，进行压缩（已经写到磁盘了），并得到两层间合并后的新tables，decr是一个执行函数，起会把newTables内的每个SST的引用计数减1
 	if err != nil {
 		return err
 	}
@@ -1559,10 +1560,10 @@ func (s *levelsController) runCompactDef(id, l int, cd compactDef) (err error) {
 			err = decErr
 		}
 	}()
-	changeSet := buildChangeSet(&cd, newTables) //zzlTODO:看到这里了 ，和之前的tables进行一个对比
+	changeSet := buildChangeSet(&cd, newTables) //创建一个更改集，貌似只记录一些SST级的更改，不记录更具体的如具体key的一些更改
 
 	// We write to the manifest _before_ we delete files (and after we created files)
-	if err := s.kv.manifest.addChanges(changeSet.Changes); err != nil { //写入清单文件，之后DB才能找到某个SST属于哪个Level
+	if err := s.kv.manifest.addChanges(changeSet.Changes); err != nil { //NOTE:核心操作，将SST级的更改信息写入清单文件，之后DB才能找到某个SST属于哪个Level
 		return err
 	}
 
@@ -1584,6 +1585,7 @@ func (s *levelsController) runCompactDef(id, l int, cd compactDef) (err error) {
 
 	// See comment earlier in this function about the ordering of these ops, and the order in which
 	// we access levels when reading.
+	// NOTE:注意啊，下面这里只是对levelHandler内的SST表进行更新操作
 	if err := nextLevel.replaceTables(cd.bot, newTables); err != nil { //把目标层老的tables删除掉，并替换成新的表
 		return err
 	}
@@ -1747,7 +1749,7 @@ func (s *levelsController) get(key []byte, maxVs y.ValueStruct, startLevel int) 
 		if h.level < startLevel {
 			continue
 		}
-		//下面这一行是核心代码，去当前遍历层找目标key
+		//下面这一行是NOTE:核心操作，去当前遍历层找目标key
 		vs, err := h.get(key) // Calls h.RLock() and h.RUnlock().
 		if err != nil {
 			return y.ValueStruct{}, y.Wrapf(err, "get key: %q", key)
@@ -1784,7 +1786,7 @@ func (s *levelsController) appendIterators(
 	// Just like with get, it's important we iterate the levels from 0 on upward, to avoid missing
 	// data when there's a compaction.
 	for _, level := range s.levels { //遍历每一层增加
-		iters = level.appendIterators(iters, opt)
+		iters = level.appendIterators(iters, opt) //NOTE:核心操作
 	}
 	return iters
 }

@@ -128,30 +128,30 @@ func (s *levelHandler) replaceTables(toDel, toAdd []*table.Table) error {
 	for _, t := range toDel {
 		toDelMap[t.ID()] = struct{}{}
 	}
-	var newTables []*table.Table
-	for _, t := range s.tables {
+	var newTables []*table.Table //创建一个容纳新SST的切片
+	for _, t := range s.tables { //遍历目标层的原有SST，如果不在目标层受影响数组（cd.bot）内，就直接加到newTables，否则就跳过
 		_, found := toDelMap[t.ID()]
-		if !found {
+		if !found { //如果不在cd.bot内
 			newTables = append(newTables, t)
 			continue
 		}
-		s.subtractSize(t)
+		s.subtractSize(t) //如果在cd.bot内，那么就直接把该SST的大小减去
 	}
 
 	// Increase totalSize first.
-	for _, t := range toAdd {
+	for _, t := range toAdd { //遍历合并后的新的SST切片
 		s.addSize(t)
 		t.IncrRef()
-		newTables = append(newTables, t)
+		newTables = append(newTables, t) // 新的SST切片内所有都加入到newTables
 	}
 
 	// Assign tables.
 	s.tables = newTables
-	sort.Slice(s.tables, func(i, j int) bool {
+	sort.Slice(s.tables, func(i, j int) bool { //对目标层最终的SST切片进行排序
 		return y.CompareKeys(s.tables[i].Smallest(), s.tables[j].Smallest()) < 0
 	})
-	s.Unlock() // s.Unlock before we DecrRef tables -- that can be slow.
-	return decrRefs(toDel)
+	s.Unlock()             // s.Unlock before we DecrRef tables -- that can be slow.
+	return decrRefs(toDel) //减少引用，以便于将旧的SST删除掉
 }
 
 // addTable adds toAdd table to levelHandler. Normally when we add tables to levelHandler, we sort
@@ -302,7 +302,7 @@ func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
 		defer it.Close()
 
 		y.NumLSMGetsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1) //统计信息
-		it.Seek(key)                                            //核心代码，正式查询，查找到的会放到it迭代器内
+		it.Seek(key)                                            //NOTE:核心操作，正式查询，查找到的会放到it迭代器内
 		if !it.Valid() {                                        //判断查找到的是否有效
 			continue
 		}
@@ -338,14 +338,14 @@ func (s *levelHandler) appendIterators(iters []y.Iterator, opt *IteratorOptions)
 		//0级表不是按键排序的，因此我们需要逐一考虑它们。
 		var out []*table.Table
 		for _, t := range s.tables { //遍历每一个表
-			if opt.pickTable(t) { //判断当前表是否需要添加到迭代器里面
+			if opt.pickTable(t) { //NOTE:核心操作，判断当前表是否需要添加到迭代器里面
 				out = append(out, t)
 			}
 		}
 		return appendIteratorsReversed(iters, out, topt) //将0层判断出需要遍历的表返回
 	}
 
-	tables := opt.pickTables(s.tables) //取出非0层的需要遍历的表
+	tables := opt.pickTables(s.tables) //NOTE:核心操作，取出非0层的需要遍历的表
 	if len(tables) == 0 {
 		return iters
 	}

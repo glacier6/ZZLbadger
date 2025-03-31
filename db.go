@@ -234,7 +234,7 @@ func Open(opt Options) (*DB, error) {
 		}
 	}
 
-	manifestFile, manifest, err := openOrCreateManifestFile(opt) //打开并创建清单文件（存储每层level有哪些sstable文件及其KEY域）
+	manifestFile, manifest, err := openOrCreateManifestFile(opt) //NOTE:核心操作，打开并创建清单文件（存储每层level有哪些sstable文件及其KEY域）
 	if err != nil {
 		return nil, err
 	}
@@ -338,12 +338,12 @@ func Open(opt Options) (*DB, error) {
 	db.closers.updateSize = z.NewCloser(1)
 	go db.updateSize(db.closers.updateSize) // 定时去计算vlog和sst文件的大小，并将其存储在y.LSMSize和y.VlogSize中。
 
-	if err := db.openMemTables(db.opt); err != nil { //应该打开的是上一次系统关闭时遗留的一些在Memtable中的数据，注意打开后，直接把这些上次遗留的放到Immemtable
+	if err := db.openMemTables(db.opt); err != nil { //NOTE:核心操作，应该打开的是上一次系统关闭时遗留的一些在Memtable中的数据，注意打开后，直接把这些上次遗留的放到Immemtable
 		return nil, y.Wrapf(err, "while opening memtables")
 	}
 
 	if !db.opt.ReadOnly {
-		if db.mt, err = db.newMemTable(); err != nil { //创建Memtable，这里有个db.openMemTable，注意与上面的少一个s，这个函数主管创建，即之后要使用的MemTable
+		if db.mt, err = db.newMemTable(); err != nil { //NOTE:核心操作，创建Memtable，这里有个db.openMemTable，注意与上面的少一个s，这个函数主管创建，即之后要使用的MemTable
 			return nil, y.Wrapf(err, "cannot create memtable")
 		}
 	}
@@ -351,13 +351,12 @@ func Open(opt Options) (*DB, error) {
 	// 新建一个LevelsController（维护LSM树的level，做日志归并，压缩处理之类的）
 	// 就是打开各个已有的SST，加载元数据块，索引块等至内存中
 	// newLevelsController里有每层一个的levelHandler，这个里面有存每层的tables
-	if db.lc, err = newLevelsController(db, &manifest); err != nil { // 利用清单做初始信息配置
+	if db.lc, err = newLevelsController(db, &manifest); err != nil { // NOTE:核心操作，利用清单做初始信息配置
 		return db, err
 	}
 
 	// Initialize vlog struct.
-	// 初始化Vlog，就是在外存打开一个DISCARD的文件（用于GC）并关联为mmap文件
-	db.vlog.init(db)
+	db.vlog.init(db) //NOTE:核心操作，初始化Vlog，就是在外存打开一个DISCARD的文件（用于GC）并关联为mmap文件
 
 	if !opt.ReadOnly {
 		// 下面是启动LSM Tree的日志归并的协程
@@ -366,8 +365,9 @@ func Open(opt Options) (*DB, error) {
 
 		db.closers.memtable = z.NewCloser(1)
 		go func() {
-			db.flushMemtable(db.closers.memtable) // Need levels controller to be up. flushMemtable执行的是将memtable刷到磁盘L0层
-			//内有handleMemTableFlush是做将memtable中的数据刷入磁盘L0层操作的函数
+			db.flushMemtable(db.closers.memtable) // Need levels controller to be up. 需要levels controller已启动
+			// NOTE:核心操作，flushMemtable执行的是将memtable刷到磁盘L0层
+			// 内有handleMemTableFlush是做将memtable中的数据刷入磁盘L0层操作的函数
 		}()
 		// Flush them to disk asap.
 		for _, mt := range db.imm { //刷新immemtable到磁盘
@@ -378,7 +378,7 @@ func Open(opt Options) (*DB, error) {
 	db.orc.nextTxnTs = db.MaxVersion()                    //获得当前最大事务的时间戳（最大版本号），通过遍历imm以及等一系列会存储最大版本号的数据
 	db.opt.Infof("Set nextTxnTs to %d", db.orc.nextTxnTs) //打印日志
 
-	if err = db.vlog.open(db); err != nil { // 打开并初始化所有vlog文件
+	if err = db.vlog.open(db); err != nil { // NOTE:核心操作，打开并初始化所有vlog文件
 		return db, y.Wrapf(err, "During db.vlog.open")
 	}
 
@@ -400,7 +400,7 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	db.closers.writes = z.NewCloser(1)
-	go db.doWrites(db.closers.writes) //创建一个处理写请求的协程
+	go db.doWrites(db.closers.writes) //NOTE:核心操作,创建一个处理写请求的协程
 
 	if !db.opt.InMemory { //开启GC
 		db.closers.valueGC = z.NewCloser(1)
@@ -804,7 +804,7 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 
 	y.NumGetsAdd(db.opt.MetricsEnabled, 1)
 	for i := 0; i < len(tables); i++ { //从最新开始遍历table
-		vs := tables[i].sl.Get(key) // 核心操作，去当前table的跳表中得到目标key
+		vs := tables[i].sl.Get(key) // NOTE:核心操作，去当前table的跳表中得到目标key
 		y.NumMemtableGetsAdd(db.opt.MetricsEnabled, 1)
 		if vs.Meta == 0 && vs.Value == nil {
 			continue
@@ -886,7 +886,7 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 		}
 	}
 	db.opt.Debugf("writeRequests called. Writing to value log")
-	err := db.vlog.write(reqs) // 写入VLOG（核心代码块）
+	err := db.vlog.write(reqs) // NOTE:核心操作，写入VLOG
 	if err != nil {
 		done(err)
 		return err
@@ -901,7 +901,7 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 		count += len(b.Entries) //累加待写入的kv对数量
 		var i uint64
 		var err error
-		// 下面这个ensureRoomForWrite函数实际上就是做的判断memtable是否满足转换为immemtable的条件，并做一些操作（核心代码块）
+		// NOTE:核心操作，下面这个ensureRoomForWrite函数实际上就是做的判断memtable是否满足转换为immemtable的条件，并做一些操作
 		for err = db.ensureRoomForWrite(); err == errNoRoom; err = db.ensureRoomForWrite() {
 			i++
 			if i%100 == 0 {
@@ -919,7 +919,7 @@ func (db *DB) writeRequests(reqs []*request) error { //批量处理写请求
 			done(err)
 			return y.Wrap(err, "writeRequests")
 		}
-		if err := db.writeToLSM(b); err != nil { //写入LSM树的核心函数，传入的是单个req
+		if err := db.writeToLSM(b); err != nil { //NOTE:核心操作，写入LSM树的核心函数，传入的是单个req
 			done(err)
 			return y.Wrap(err, "writeRequests")
 		}
@@ -1310,7 +1310,7 @@ func (db *DB) RunValueLogGC(discardRatio float64) error {
 	}
 
 	// Pick a log file and run GC
-	return db.vlog.runGC(discardRatio)
+	return db.vlog.runGC(discardRatio) // NOTE:核心操作
 }
 
 // Size returns the size of lsm and value log files in bytes. It can be used to decide how often to

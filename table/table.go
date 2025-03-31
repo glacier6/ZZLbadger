@@ -71,6 +71,7 @@ type Options struct {
 	BlockSize int
 
 	// DataKey is the key used to decrypt the encrypted text.
+	//DataKey是用于解密加密文本的密钥。
 	DataKey *pb.DataKey
 
 	// Compression indicates the compression algorithm used for block compression.
@@ -150,6 +151,7 @@ func (t *Table) KeyCount() uint32 { return t.cheapIndex().KeyCount }
 func (t *Table) OnDiskSize() uint32 { return t.cheapIndex().OnDiskSize }
 
 // CompressionType returns the compression algorithm used for block compression.
+// CompressionType返回用于块压缩的压缩算法。
 func (t *Table) CompressionType() options.CompressionType {
 	return t.opt.Compression
 }
@@ -162,17 +164,17 @@ func (t *Table) IncrRef() {
 
 // DecrRef decrements the refcount and possibly deletes the table
 // DecrEf递减引用计数，并可能删除表
-// zzlTODO:这里针对的是内存中的吗，压缩结束的时候也会对所有新生成的表执行一次这个
+// zzlTODO:这里针对的是内存中的吗，压缩结束的时候也会对所有新生成的表执行一次这个，还有合并后的初始计数是多少？
 func (t *Table) DecrRef() error {
-	newRef := t.ref.Add(-1)
-	if newRef == 0 {
+	newRef := t.ref.Add(-1) //引用计数减1
+	if newRef == 0 {        //如果计数为0了，那么说明已经没有人要用到这个SST了，那么就把这个SST给删除掉
 		// We can safely delete this file, because for all the current files, we always have
 		// at least one reference pointing to them.
 		//我们可以安全地删除此文件，因为对于所有当前文件，我们总是至少有一个指向它们的引用。
 		// Delete all blocks from the cache.
 		//从缓存中删除所有块。
 		for i := 0; i < t.offsetsLength(); i++ {
-			t.opt.BlockCache.Del(t.blockCacheKey(i))
+			t.opt.BlockCache.Del(t.blockCacheKey(i)) //从块缓存中也删除掉这个SST的所有块
 		}
 		if err := t.Delete(); err != nil {
 			return err
@@ -641,7 +643,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 
 		// Decrement the block ref if we could not insert it in the cache.
 		// 如果我们无法将块ref插入缓存中，请将其递减。
-		if !t.opt.BlockCache.Set(key, blk, blk.size()) { //核心代码，将读取到的块设置到块缓存中
+		if !t.opt.BlockCache.Set(key, blk, blk.size()) { //NOTE:核心操作，将读取到的块设置到块缓存中
 			blk.decrRef()
 		}
 		// We have added an OnReject func in our cache, which gets called in case the block is not
