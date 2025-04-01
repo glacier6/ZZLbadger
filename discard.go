@@ -43,7 +43,8 @@ func InitDiscardStats(opt Options) (*discardStats, error) {
 	fname := filepath.Join(opt.ValueDir, discardFname)
 
 	// 1MB file can store 65.536 discard entries. Each entry is 16 bytes.
-	mf, err := z.OpenMmapFile(fname, os.O_CREATE|os.O_RDWR, 1<<20) //将创建外存的DISCARD文件的内存映射
+	// 1MB文件可以存储65.536个丢弃条目。每个条目为16个字节。
+	mf, err := z.OpenMmapFile(fname, os.O_CREATE|os.O_RDWR, 1<<20) //NOTE:核心操作，将创建外存的DISCARD文件的内存映射（可以在此查看mmap的具体如何实现的！）
 	lf := &discardStats{
 		MmapFile: mf,
 		opt:      opt,

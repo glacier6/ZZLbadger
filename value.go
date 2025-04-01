@@ -565,7 +565,7 @@ func (vlog *valueLog) init(db *DB) {
 	vlog.dirPath = vlog.opt.ValueDir
 
 	vlog.garbageCh = make(chan struct{}, 1) // 同一时间只允许一个GC运行
-	lf, err := InitDiscardStats(vlog.opt)   // 这里创建的DISCARD文件是用作GC的
+	lf, err := InitDiscardStats(vlog.opt)   // NOTE:核心操作，这里创建的DISCARD文件是用作GC的
 	y.Check(err)
 	vlog.discardStats = lf
 	// See TestPersistLFDiscardStats for purpose of statement below.
