@@ -333,6 +333,7 @@ func (b *Builder) shouldFinishBlock(key []byte, value y.ValueStruct) bool {
 // AddStaleKey is same is Add function but it also increments the internal
 // staleDataSize counter. This value will be used to prioritize this table for
 // compaction.
+// AddStaleKey与Add函数相同，但它也会递增内部staleDataSize计数器。该值将用于确定此表的压缩优先级。
 func (b *Builder) AddStaleKey(key []byte, v y.ValueStruct, valueLen uint32) {
 	// Rough estimate based on how much space it will occupy in the SST.
 	b.staleDataSize += len(key) + len(v.Value) + 4 /* entry offset */ + 4 /* header size */

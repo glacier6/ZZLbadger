@@ -526,7 +526,7 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 		return false
 	}
 
-	tryLmaxToLmaxCompaction := func() { // 底层自我合并
+	tryLmaxToLmaxCompaction := func() { // 最底层自我合并
 		p := compactionPriority{ //合并优先级对象
 			level: s.lastLevel().level, //获取最后一层的层号（第6层）
 			t:     s.levelTargets(),
@@ -544,7 +544,7 @@ func (s *levelsController) runCompactor(id int, lc *z.Closer) {
 			count++
 			// Each ticker is 50ms so 50*200=10seconds.
 			if s.kv.opt.LmaxCompaction && id == 2 && count >= 200 { // 注意只有2号协程才会执行底层自我合并的操作，且每10秒才会执行一次这个操作（LmaxCompaction参数控制这个功能是否开启）
-				tryLmaxToLmaxCompaction() //执行底层自我合并
+				tryLmaxToLmaxCompaction() //执行最底层自我合并
 				count = 0
 			} else {
 				runOnce() //其余的进行普通的压缩
@@ -669,6 +669,7 @@ func (s *levelsController) pickCompactLevels(priosBuffer []compactionPriority) (
 }
 
 // checkOverlap checks if the given tables overlap with any level from the given "lev" onwards.
+// checkOverlap检查给定的table是否与给定“lev”之后的任何级别重叠。
 func (s *levelsController) checkOverlap(tables []*table.Table, lev int) bool {
 	kr := getKeyRange(tables...)
 	for i, lh := range s.levels {
@@ -686,29 +687,34 @@ func (s *levelsController) checkOverlap(tables []*table.Table, lev int) bool {
 }
 
 // subcompact runs a single sub-compaction, iterating over the specified key-range only.
-//
+
 // We use splits to do a single compaction concurrently. If we have >= 3 tables
 // involved in the bottom level during compaction, we choose key ranges to
 // split the main compaction up into sub-compactions. Each sub-compaction runs
 // concurrently, only iterating over the provided key range, generating tables.
 // This speeds up the compaction significantly.
+// subcompact运行一个子压缩，仅在指定的键范围内迭代。
+// 我们使用拆分同时执行单个压缩。如果在压实过程中，底层涉及>=3个表格，我们会选择关键范围将主压实拆分为子压实。
+// 每个子压缩并行运行，只在提供的键范围内迭代，生成表。这大大加快了压实速度。
 func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 	inflightBuilders *y.Throttle, res chan<- *table.Table) {
+	//注意kr是当前子压缩要处理的key范围，每个子压缩处理的key范围不一样
 
 	// Check overlap of the top level with the levels which are not being
 	// compacted in this compaction.
-	hasOverlap := s.checkOverlap(cd.allTables(), cd.nextLevel.level+1) //覆盖度检查
+	hasOverlap := s.checkOverlap(cd.allTables(), cd.nextLevel.level+1) //覆盖度检查，检查两层中受影响的SST（即top + bot）的总范围是否与更底层之间有重叠
 
 	// Pick a discard ts, so we can discard versions below this ts. We should
 	// never discard any versions starting from above this timestamp, because
 	// that would affect the snapshot view guarantee provided by transactions.
+	// 选择一个丢弃ts，这样我们就可以丢弃低于此ts的版本。我们永远不应该丢弃从高于此时间戳开始的任何版本，因为这会影响事务提供的快照视图保证。
 	discardTs := s.kv.orc.discardAtOrBelow()
 
 	// Try to collect stats so that we can inform value log about GC. That would help us find which
 	// value log file should be GCed.
-	//尝试收集统计数据，以便我们可以通知GC的值日志。这将帮助我们找到应该对哪个值日志文件进行GC。
+	// 尝试收集统计数据，以便我们可以通知GC的值日志。这将帮助我们找到应该对哪个值日志文件进行GC。
 	discardStats := make(map[uint32]int64)
-	updateStats := func(vs y.ValueStruct) { //在日志压缩的过程中，对无用的key数量进行统计（在GC里面用这个值）
+	updateStats := func(vs y.ValueStruct) { //在日志压缩的过程中，对无用的KV大小进行统计（在GC里面用这个值）
 		// We don't need to store/update discard stats when badger is running in Disk-less mode.
 		if s.kv.opt.InMemory {
 			return
@@ -716,13 +722,15 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 		if vs.Meta&bitValuePointer > 0 {
 			var vp valuePointer
 			vp.Decode(vs.Value)
-			discardStats[vp.Fid] += int64(vp.Len)
+			discardStats[vp.Fid] += int64(vp.Len) //累加无效KV的Value大小
 		}
 	}
 
 	// exceedsAllowedOverlap returns true if the given key range would overlap with more than 10
 	// tables from level below nextLevel (nextLevel+1). This helps avoid generating tables at Li
 	// with huge overlaps with Li+1.
+	// 如果给定的键范围与nextLevel（nextLevel+1）以下级别的10个以上表重叠，exceedsAllowedOverlap将返回true。
+	// 这有助于避免在Li生成与Li+1有巨大重叠的表。
 	exceedsAllowedOverlap := func(kr keyRange) bool {
 		n2n := cd.nextLevel.level + 1
 		if n2n <= 1 || n2n >= len(s.levels) {
@@ -749,15 +757,17 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 		var numKeys, numSkips uint64
 		var rangeCheck int
 		var tableKr keyRange
+		//不断地遍历迭代器，来取kv对，注意取出来的KV对在KEY上是有序的
 		for ; it.Valid(); it.Next() {
 			// See if we need to skip the prefix.
 			if len(cd.dropPrefixes) > 0 && hasAnyPrefixes(it.Key(), cd.dropPrefixes) { //如果是包含有可跳过信息的前缀，就跳过
 				numSkips++
-				updateStats(it.Value())
+				updateStats(it.Value()) //将当前跳过的KV大小累加到无效池中
 				continue
 			}
 
 			// See if we need to skip this key.
+			// 如果有需要跳过的key，那么就跳过
 			if len(skipKey) > 0 {
 				if y.SameKey(it.Key(), skipKey) {
 					numSkips++
@@ -768,32 +778,39 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 				}
 			}
 
-			if !y.SameKey(it.Key(), lastKey) { //处理相同key的不同版本，被忽略版本的会在这个if里面进行一个统计
+			//处理相同key的不同版本，被忽略版本的会在这个if里面进行一个统计
+			if !y.SameKey(it.Key(), lastKey) {
+				// 如果当前遍历key与lastKey不同
 				firstKeyHasDiscardSet = false
 				if len(kr.right) > 0 && y.CompareKeys(it.Key(), kr.right) >= 0 {
+					//如果当前的子压缩处理的key范围右界存在，且当前遍历的KV对的KEY要 >= 右界，那么就不归本次压缩处理，跳过
 					break
 				}
 				if builder.ReachedCapacity() { //判断buffer是否写的太多，写的多了话就会在这里做一个切分
 					// Only break if we are on a different key, and have reached capacity. We want
 					// to ensure that all versions of the key are stored in the same sstable, and
 					// not divided across multiple tables at the same level.
+					// 只有当我们在另一个关键点上，并且已经达到容量时，才会打破。我们希望确保密钥的所有版本都存储在同一个sstable中，而不是在同一级别的多个表中划分。
 					break
 				}
-				lastKey = y.SafeCopy(lastKey, it.Key())
+				lastKey = y.SafeCopy(lastKey, it.Key()) //将当前key记录起来
 				numVersions = 0
 				firstKeyHasDiscardSet = it.Value().Meta&bitDiscardEarlierVersions > 0
 
 				if len(tableKr.left) == 0 {
+					//如果是遍历的第一个，则将当前KV的KEY，设置为当前SST的左边界
 					tableKr.left = y.SafeCopy(tableKr.left, it.Key())
 				}
-				tableKr.right = lastKey
+				tableKr.right = lastKey //不断更新右边界（因为遍历的key是有序的，所以可以直接赋值）
 
 				rangeCheck++
-				if rangeCheck%5000 == 0 { //每写入 5000条key（版本不同但同一个key计数为1）
+				if rangeCheck%5000 == 0 { //每写入5000条key（版本不同但同一个key计数为1）
 					// This table's range exceeds the allowed range overlap with the level after
 					// next. So, we stop writing to this table. If we don't do this, then we end up
 					// doing very expensive compactions involving too many tables. To amortize the
 					// cost of this check, we do it only every N keys.
+					// 此SST的范围超出了允许的范围，与下一个级别重叠。所以，我们停止向该SST写入。
+					// 如果我们不这样做，那么我们最终会做非常昂贵的压缩，涉及太多的SST。为了摊销此检查的成本，我们只对每个N个密钥进行一次检查。
 					if exceedsAllowedOverlap(tableKr) {
 						// s.kv.opt.Debugf("L%d -> L%d Breaking due to exceedsAllowedOverlap with
 						// kr: %s\n", cd.thisLevel.level, cd.nextLevel.level, tableKr)
@@ -809,38 +826,50 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 
 			// Do not discard entries inserted by merge operator. These entries will be
 			// discarded once they're merged
-			if version <= discardTs && vs.Meta&bitMergeEntry == 0 { //判断哪些key应该保留哪些key应该删掉
+			// 不要丢弃合并操作插入的KV。这些KV合并后将被丢弃
+			// 判断哪些key应该保留哪些key应该删掉
+			if version <= discardTs && vs.Meta&bitMergeEntry == 0 {
 				// Keep track of the number of versions encountered for this key. Only consider the
 				// versions which are below the minReadTs, otherwise, we might end up discarding the
 				// only valid version for a running transaction.
+				// 记录此密钥遇到的版本数。只考虑低于minReadTs的版本，否则，我们可能会丢弃正在运行的事务的唯一有效版本。
 				numVersions++
 				// Keep the current version and discard all the next versions if
 				// - The `discardEarlierVersions` bit is set OR
 				// - We've already processed `NumVersionsToKeep` number of versions
 				// (including the current item being processed)
+				//如果出现以下情况，请保留当前版本并丢弃所有下一个版本
+				//-设置“discard Earlier Versions”位或
+				//-我们已经处理了“NumVersionsToKeep”数量的版本
+				//（包括当前正在处理的项目）
 				lastValidVersion := vs.Meta&bitDiscardEarlierVersions > 0 ||
 					numVersions == s.kv.opt.NumVersionsToKeep
 
 				if isExpired || lastValidVersion {
 					// If this version of the key is deleted or expired, skip all the rest of the
 					// versions. Ensure that we're only removing versions below readTs.
+					// 如果此版本的密钥已删除或过期，请跳过所有其他版本。确保我们只删除低于readTs的版本。
 					skipKey = y.SafeCopy(skipKey, it.Key())
 
 					switch {
 					// Add the key to the table only if it has not expired.
 					// We don't want to add the deleted/expired keys.
+					// 仅当密钥尚未过期时，才将其添加到表中。我们不想添加已删除/过期的密钥。
 					case !isExpired && lastValidVersion:
 						// Add this key. We have set skipKey, so the following key versions
 						// would be skipped.
+						// 添加此KEY。我们已设置skipKey，因此将跳过以下密钥版本。
 					case hasOverlap:
 						// If this key range has overlap with lower levels, then keep the deletion
 						// marker with the latest version, discarding the rest. We have set skipKey,
 						// so the following key versions would be skipped.
+						// 如果此键范围与较低级别有重叠，则保留最新版本的删除标记，丢弃其余部分。我们已设置skipKey，因此将跳过以下键版本。
 					default:
 						// If no overlap, we can skip all the versions, by continuing here.
+						// 如果没有重叠，我们可以跳过所有版本
 						numSkips++
-						updateStats(vs) //更新脏键数
-						continue        // Skip adding this key.
+						updateStats(vs) // 将当前跳过的KV对，更新到脏键统计中
+						continue        // 跳过
 					}
 				}
 			}
@@ -849,15 +878,18 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 			if vs.Meta&bitValuePointer > 0 {
 				vp.Decode(vs.Value)
 			}
+			//下面是依照当前KV的特性，分别压缩保留到不同的位置，如果下次压缩要丢掉，那么就执行AddStaleKey，否则就执行普通的Add即可
 			switch {
 			case firstKeyHasDiscardSet:
 				// This key is same as the last key which had "DiscardEarlierVersions" set. The
 				// the next compactions will drop this key if its ts >
 				// discardTs (of the next compaction).
+				// 此密钥与设置了“DiscardEarlier Versions”的最后一个密钥相同。如果ts>discadTs（下一次压缩），则下一次压实将删除此键。
 				builder.AddStaleKey(it.Key(), vs, vp.Len)
 			case isExpired:
 				// If the key is expired, the next compaction will drop it if
 				// its ts > discardTs (of the next compaction).
+				// 如果密钥已过期，如果其ts>discadTs（下一次压缩），则下一次压实将丢弃它。
 				builder.AddStaleKey(it.Key(), vs, vp.Len)
 			default:
 				builder.Add(it.Key(), vs, vp.Len)
@@ -868,22 +900,23 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 	} // End of function: addKeys
 
 	if len(kr.left) > 0 {
-		it.Seek(kr.left)
+		it.Seek(kr.left) //找到开始位置
 	} else {
 		it.Rewind()
 	}
-	for it.Valid() { //在此之前，已经把当前层以及目标层的table合并形成一个新的数组。
-		if len(kr.right) > 0 && y.CompareKeys(it.Key(), kr.right) >= 0 {
+	for it.Valid() { //如果当前迭代的KV对有效
+		if len(kr.right) > 0 && y.CompareKeys(it.Key(), kr.right) >= 0 { //如果不在当前子压缩要处理的范围内，就跳过
 			break
 		}
 
-		bopts := buildTableOptions(s.kv)
+		bopts := buildTableOptions(s.kv) //得到新建SST的一些配置项
 		// Set TableSize to the target file size for that level.
+		// 将TableSize设置为该级别的目标文件大小。
 		bopts.TableSize = uint64(cd.t.fileSz[cd.nextLevel.level])
-		builder := table.NewTableBuilder(bopts)
+		builder := table.NewTableBuilder(bopts) //依照SST配置项创建一个生成SST的builder
 
 		// This would do the iteration and add keys to builder.
-		addKeys(builder) //把有效的key都加入到builder
+		addKeys(builder) //NOTE:核心操作，把有效的key都加入到builder
 
 		// It was true that it.Valid() at least once in the loop above, which means we
 		// called Add() at least once, and builder is not Empty().
@@ -905,8 +938,10 @@ func (s *levelsController) subcompact(it y.Iterator, kr keyRange, cd compactDef,
 
 			var tbl *table.Table
 			if s.kv.opt.InMemory {
+				// 如果以内存模式，写入到内存即可
 				tbl, err = table.OpenInMemoryTable(builder.Finish(), fileID, &bopts)
 			} else {
+				// 非内存模式，刷入磁盘
 				fname := table.NewFilename(fileID, s.kv.opt.Dir)
 				tbl, err = table.CreateTable(fname, builder)
 			}
@@ -985,7 +1020,7 @@ func (s *levelsController) compactBuildTables( // 进行压缩，并得到两层
 			defer inflightBuilders.Done(nil)                   //异步操作，当前异步协程已完成
 			it := table.NewMergeIterator(newIterator(), false) //生成一个用于合并的迭代器
 			defer it.Close()
-			s.subcompact(it, kr, cd, inflightBuilders, res) //NOTE: 核心操作，进行子任务压缩，//zzlTODO:看到这里了，内容太多了，待看，还有上面那个迭代器怎么生成的也待看
+			s.subcompact(it, kr, cd, inflightBuilders, res) //NOTE: 核心操作，进行子任务压缩
 		}(kr)
 	}
 

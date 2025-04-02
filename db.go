@@ -818,7 +818,7 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 			maxVs = vs
 		}
 	}
-	return db.lc.get(key, maxVs, 0) //这里就去level中找了
+	return db.lc.get(key, maxVs, 0) //NOTE:核心操作，这里就去level中找了
 }
 
 var requestPool = sync.Pool{

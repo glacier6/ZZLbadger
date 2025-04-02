@@ -550,7 +550,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 	}
 	if t.opt.BlockCache != nil { //如果允许块缓存，那么就先去内存找对应块
 		key := t.blockCacheKey(idx)          //依照前面找到的idx生成在块缓存内该块对应的key值（是块的key）
-		blk, ok := t.opt.BlockCache.Get(key) //依照块的key去缓存中找这个块
+		blk, ok := t.opt.BlockCache.Get(key) //依照块的key去缓存中找这个块 NOTE:420
 		if ok && blk != nil {
 			// Use the block only if the increment was successful. The block
 			// could get evicted from the cache between the Get() call and the
@@ -643,7 +643,7 @@ func (t *Table) block(idx int, useCache bool) (*Block, error) {
 
 		// Decrement the block ref if we could not insert it in the cache.
 		// 如果我们无法将块ref插入缓存中，请将其递减。
-		if !t.opt.BlockCache.Set(key, blk, blk.size()) { //NOTE:核心操作，将读取到的块设置到块缓存中
+		if !t.opt.BlockCache.Set(key, blk, blk.size()) { //NOTE:421 核心操作，将读取到的块设置到块缓存中
 			blk.decrRef()
 		}
 		// We have added an OnReject func in our cache, which gets called in case the block is not
@@ -681,7 +681,7 @@ func (t *Table) Size() int64 { return int64(t.tableSize) }
 
 // StaleDataSize is the amount of stale data (that can be dropped by a compaction )in this SST.
 // StaleDataSize是此SST中的过时数据大小（可以通过压缩删除）。
-func (t *Table) StaleDataSize() uint32 { return t.fetchIndex().StaleDataSize() }
+func (t *Table) StaleDataSize() uint32 { return t.fetchIndex().StaleDataSize() } //NOTE:423
 
 // Smallest is its smallest key, or nil if there are none
 func (t *Table) Smallest() []byte { return t.smallest }
@@ -706,7 +706,7 @@ func (t *Table) DoesNotHave(hash uint32) bool {
 
 	y.NumLSMBloomHitsAdd(t.opt.MetricsEnabled, "DoesNotHave_ALL", 1)
 	index := t.fetchIndex()        //获取当前SST的索引块
-	bf := index.BloomFilterBytes() //做布隆过滤器的过滤
+	bf := index.BloomFilterBytes() //做布隆过滤器的过滤 NOTE:422
 	mayContain := y.Filter(bf).MayContain(hash)
 	if !mayContain {
 		y.NumLSMBloomHitsAdd(t.opt.MetricsEnabled, "DoesNotHave_HIT", 1)

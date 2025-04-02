@@ -287,7 +287,7 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 // get returns value for a given key or the key after that. If not found, return nil.
 // get返回给定键或之后键的值。如果没有找到，返回nil。
 func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
-	tables, decr := s.getTableForKey(key) //获取当前层的可能包含目标key的SST句柄，0层把所有SST返回，其余层用二分查找找到目标那一个返回就可以
+	tables, decr := s.getTableForKey(key) //NOTE:核心操作，获取当前层的可能包含目标key的SST句柄，0层把所有SST返回，其余层用二分查找找到目标那一个返回就可以
 	keyNoTs := y.ParseKey(key)            //获取没有时间戳的KEY
 
 	hash := y.Hash(keyNoTs) // 把key映射到了一个hash函数中
