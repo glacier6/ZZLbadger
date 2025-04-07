@@ -1004,7 +1004,7 @@ func (s *levelsController) compactBuildTables( // 进行压缩，并得到两层
 			iters = []y.Iterator{topTables[0].NewIterator(table.NOCACHE)}
 		}
 		// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
-		// 下一级的级别>=1，我们可以使用ConcatItterator，因为键范围不重叠。
+		// 目标层的级别>=1，我们可以使用ConcatItterator，因为键范围不重叠。
 		return append(iters, table.NewConcatIterator(valid, table.NOCACHE))
 	}
 
@@ -1018,7 +1018,7 @@ func (s *levelsController) compactBuildTables( // 进行压缩，并得到两层
 		}
 		go func(kr keyRange) {
 			defer inflightBuilders.Done(nil)                   //异步操作，当前异步协程已完成
-			it := table.NewMergeIterator(newIterator(), false) //生成一个用于合并的迭代器
+			it := table.NewMergeIterator(newIterator(), false) //生成一个用于合并的迭代器 NOTE:470
 			defer it.Close()
 			s.subcompact(it, kr, cd, inflightBuilders, res) //NOTE: 核心操作，进行子任务压缩
 		}(kr)

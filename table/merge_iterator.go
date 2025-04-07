@@ -206,7 +206,9 @@ func (mi *MergeIterator) Close() error {
 }
 
 // NewMergeIterator creates a merge iterator.
-func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator { // 会把迭代器组织成一个平衡二叉树，之后会对这个二叉树进行左旋右旋等操作，为了方便做range操作，也是生成了一个堆？（利用其惰性排序，就可以不用把所有需要遍历的SST依次遍历，进而提升性能）
+func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator {
+	// NewMergeIterator函数递归调用，并会把迭代器切片组织成一个平衡二叉树，之后会对这个二叉树进行左旋右旋等操作，为了方便做range操作，也是生成了一个堆？（利用其惰性排序，就可以不用把所有需要遍历的SST依次遍历，进而提升性能）
+	// 这个平衡二叉树的每个叶子节点都是一个子迭代器对象（y.Iterator），父节点则是一个合并迭代器对象（MergeIterator）
 	switch len(iters) {
 	case 0:
 		return nil

@@ -52,8 +52,8 @@ const (
 	// Set if item shouldn't be discarded via compactions (used by merge operator)
 	bitMergeEntry byte = 1 << 3
 	// The MSB 2 bits are for transactions.
-	bitTxn    byte = 1 << 6 // Set if the entry is part of a txn. 设置该条目是否为txn的一部分。
-	bitFinTxn byte = 1 << 7 // Set if the entry is to indicate end of txn in value log. 设置该条目是否指示值日志中txn的结束。
+	bitTxn    byte = 1 << 6 // Set if the entry is part of a txn. 用于判别该条目是否为txn的一部分。
+	bitFinTxn byte = 1 << 7 // Set if the entry is to indicate end of txn in value log. 用于判别该条目是否指示vlog中txn的结束。
 
 	mi int64 = 1 << 20 //nolint:unused
 

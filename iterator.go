@@ -503,7 +503,7 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 	}
 	// lc是层级管理器(levelcontroler)，下面是对每一层创建一个迭代器，并加在iters对象内（注意0层与其他层处理方式不同）
 	iters = txn.db.lc.appendIterators(iters, &opt) // This will increment references. NOTE:核心操作
-	res := &Iterator{
+	res := &Iterator{                              // NOTE:471
 		txn:    txn,
 		iitr:   table.NewMergeIterator(iters, opt.Reverse), // NOTE:核心操作，合并的迭代器（二叉树结构），包含事物的，内存的，外存的（按level展开）
 		opt:    opt,

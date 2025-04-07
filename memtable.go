@@ -504,7 +504,7 @@ loop:
 		vp.Offset = e.offset
 		vp.Fid = lf.fid
 
-		switch { // GO的switch默认会自动break
+		switch { // GO的switch默认会自动break，zzlTODO:下面是干什么的？待看，应该不是直接排除失效的KV把
 		case e.meta&bitTxn > 0:
 			txnTs := y.ParseTs(e.Key)
 			if lastCommit == 0 {
@@ -522,6 +522,7 @@ loop:
 				break loop
 			}
 			// Got the end of txn. Now we can store them.
+			// txn部分结束了。现在我们可以储存它们了。
 			lastCommit = 0
 			validEndOffset = read.recordOffset
 
@@ -541,6 +542,7 @@ loop:
 			if lastCommit != 0 {
 				// This is most likely an entry which was moved as part of GC.
 				// We shouldn't get this entry in the middle of a transaction.
+				//这很可能是作为GC的一部分被移动的条目。我们不应该在交易的中间得到这个条目。
 				break loop
 			}
 			validEndOffset = read.recordOffset
