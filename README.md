@@ -117,6 +117,9 @@ ZZL写在最前：
   4.TinyLFU 其是一种与替换策略无关的接纳策略，旨在通过极小的内存开销来提高命中率。主要思想是只允许新项进入，如果其估计值高于被替换项的估计值。Ristretto使用 Count-Min Sketch 在 Ristretto 中实现了 TinyLFU。它使用 4 位计数器来近似项的访问频率（ɛ，进入键的ε值应该高于被替换键的ε值）。每个键的这种小成本使我们能够跟踪比使用正常键到频率映射更大的全局键空间样本。
   TinyLFU 还通过 Reset 函数维护键访问的最近性。经过 N 次键增加后，计数器减半。因此，一段时间内未出现的键将计数器重置为零；为最近出现的键铺平道路。
 
+(10)badger与Dgraph均用linux自身的makeFile来进行打包
+  详见https://blog.csdn.net/weixin_64132124/article/details/143465619
+  PS:进入项目的根目录，然后执行make指令即可打包，会把badger与Dgraph各自的二进制执行程序打包到各自项目目录的同名文件夹下。注意使用make命令之前需要执行makefile文件内的dependence的下载命令
 
 
 # BadgerDB
