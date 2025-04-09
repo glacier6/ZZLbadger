@@ -39,7 +39,7 @@ type oracle struct {
 
 	sync.Mutex // For nextTxnTs and commits.
 	// writeChLock lock 用于确保事务被写入
-	// 通道的顺序与它们的提交时间戳相同。
+	// writeChLock 确保事务以与其提交时间戳相同的顺序进入写入通道。
 	writeChLock sync.Mutex
 	nextTxnTs   uint64
 

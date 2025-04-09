@@ -294,6 +294,7 @@ func Open(opt Options) (*DB, error) {
 	}
 
 	if opt.IndexCacheSize > 0 { // 如果允许有索引缓存，每个SSTable开头会有一个索引块，方便快速的可以对KEY进行二分查找，而这个索引缓存就是迅速定位当前的key在哪个SSTable
+		// 注意如果在 Badger 上启用加密, 基本就必须设置索引缓存大小。拥有缓存可以提高性能。否则, 启用加密时, 您的读取速度会非常慢。
 		// Index size is around 5% of the table size.
 		indexSz := int64(float64(opt.MemTableSize) * 0.05)
 		numInCache := opt.IndexCacheSize / indexSz

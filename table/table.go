@@ -96,6 +96,7 @@ type TableInterface interface {
 }
 
 // Table represents a loaded table file with the info we have about it.
+// Table 表示一个加载的表文件, 其中包含我们所拥有的信息。smallest, biggest 可以在前缀查询时起到过滤作用。
 type Table struct {
 	sync.Mutex
 	*z.MmapFile

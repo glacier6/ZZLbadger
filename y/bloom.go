@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// 布隆过滤算法使用的是 LevelDB的算法
+
 package y
 
 import "math"

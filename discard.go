@@ -51,7 +51,7 @@ func InitDiscardStats(opt Options) (*discardStats, error) {
 	}
 	if err == z.NewFile {
 		// We don't need to zero out the entire 1MB.
-		lf.zeroOut()
+		lf.zeroOut() // 填充为0(非数字0)
 
 	} else if err != nil {
 		return nil, y.Wrapf(err, "while opening file: %s\n", discardFname)

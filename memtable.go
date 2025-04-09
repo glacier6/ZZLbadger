@@ -46,8 +46,9 @@ import (
 // its pre-crash form.
 type memTable struct {
 	// TODO: Give skiplist z.Calloc'd []byte.
-	sl         *skl.Skiplist
-	wal        *logFile
+	// 对 memTable 的写入同时写入WAL和Skiplist。在崩溃时, 重播 WAL 以将Skiplist恢复到崩溃前的形式。
+	sl         *skl.Skiplist //跳表，改编自 RocksDB inline skiplist.内联跳跃表是对于LevelDB中的跳跃表的优化, 原理很简单, 通过更紧凑的内存安排: 减少了内存的使用，提供了更好的局部性
+	wal        *logFile      //容灾
 	maxVersion uint64
 	opt        Options
 	buf        *bytes.Buffer
